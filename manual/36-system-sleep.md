@@ -4,6 +4,8 @@ Omarchy enables suspend and hibernation by default, but if you're having issues 
 
 On NVIDIA GB10 machines, such as the DGX Spark and the ASUS Ascent GX10, suspend and hibernation are turned off, as they are in NVIDIA's DGX OS, because sleep hasn't been shown to work on that hardware yet. The same goes for the ASUS Zenbook A16 (UX3607OA), where suspend doesn't yet put the chip fully to sleep and can hang overnight. The suspend toggle and hibernation setup don't apply there. To turn sleep back on, remove `/etc/systemd/sleep.conf.d/omarchy-sleep-disabled.conf` with `sudo rm`; Suspend then returns to the menu, and hibernation can be set up as on other machines. Running `sudo omarchy apply hardware --install-user "$USER"` puts the file back.
 
+Snapdragon X laptops, the X Elite and the X Plus, suspend to idle. Deep sleep is the kernel default on those chips and leaves the machine running, keyboard backlight included. Omarchy writes `MemorySleepMode=s2idle` to `/etc/systemd/sleep.conf.d/omarchy-snapdragon-x-s2idle.conf`. Snapdragon X2 machines, such as the Zenbook A16, keep the setup in the paragraph above. To suspend with deep sleep instead, remove the Snapdragon file with `sudo rm`. Running `sudo omarchy apply hardware --install-user "$USER"` writes it again.
+
 ### Power profiles
 
 On a laptop, Omarchy remembers your power profile separately for plugged in and running on battery, and switches between the two as you plug and unplug. Out of the box that means performance on AC and balanced on battery.

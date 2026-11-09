@@ -252,6 +252,10 @@ machine() {
     t14s-21n1-not-qualcomm) dmi product_name 21N10000US; FAKE_PLATFORM=aarch64 ;;
     t14-gen4) dmi product_name 21F60000US ;;
     yoga-slim7x) dmi product_name 83ED; FAKE_PLATFORM=aarch64-qualcomm; FAKE_COMPATIBLE="lenovo,yoga-slim7x qcom,x1e80100" ;;
+    x1e78100-only) dmi product_name "ThinkPad T14s Gen 6"; FAKE_PLATFORM=aarch64-qualcomm; FAKE_COMPATIBLE="lenovo,thinkpad-t14s qcom,x1e78100" ;;
+    x1p64100-only) dmi product_name "Surface Pro, 11th Edition"; FAKE_PLATFORM=aarch64-qualcomm; FAKE_COMPATIBLE="microsoft,denali-lcd qcom,x1p64100" ;;
+    vivobook-s15) dmi sys_vendor ASUS; dmi product_name "Vivobook S 15 S5507QA"; FAKE_PLATFORM=aarch64-qualcomm; FAKE_COMPATIBLE="asus,vivobook-s15-x1p4 qcom,x1p42100" ;;
+    vivobook-s15-not-qualcomm) dmi sys_vendor ASUS; dmi product_name "Vivobook S 15 S5507QA"; FAKE_PLATFORM=aarch64; FAKE_COMPATIBLE="asus,vivobook-s15-x1p4 qcom,x1p42100" ;;
     zenbook-a16) dmi sys_vendor ASUS; dmi product_name "Zenbook A16 UX3607OA"; FAKE_PLATFORM=aarch64-qualcomm ;;
     zenbook-a16-not-qualcomm) dmi sys_vendor ASUS; dmi product_name "Zenbook A16 UX3607OA"; FAKE_PLATFORM=aarch64 ;;
     omnibook-ultra-14) dmi sys_vendor HP; dmi product_name "HP OmniBook Ultra Laptop 14-kg0xxx"; FAKE_PLATFORM=aarch64-qualcomm; FAKE_COMPATIBLE="hp,omnibook-ultra-kg0xxx qcom,glymur" ;;
@@ -259,7 +263,7 @@ machine() {
     glymur-not-qualcomm) FAKE_PLATFORM=aarch64; FAKE_COMPATIBLE="anduril,bluechip qcom,glymur" ;;
     # A Mahua tree's root names qcom,mahua and never qcom,glymur.
     t14s-gen7) FAKE_PLATFORM=aarch64-qualcomm; FAKE_COMPATIBLE="lenovo,thinkpad-t14s-gen7-lcd lenovo,thinkpad-t14s-gen7 qcom,mahua" ;;
-    zenbook-14-ux3480qa) dmi sys_vendor ASUS; dmi product_name "Zenbook 14 UX3480QA"; dmi product_family "Zenbook 14"; FAKE_PLATFORM=aarch64-qualcomm ;;
+    zenbook-14-ux3480qa) dmi sys_vendor ASUS; dmi product_name "Zenbook 14 UX3480QA"; dmi product_family "Zenbook 14"; FAKE_PLATFORM=aarch64-qualcomm; FAKE_COMPATIBLE="asus,zenbook-14-ux3480qa qcom,x1p42100" ;;
     zenbook-14-ux3480qa-not-qualcomm) dmi sys_vendor ASUS; dmi product_name "Zenbook 14 UX3480QA"; FAKE_PLATFORM=aarch64 ;;
     xps13-ptl) xps13; FAKE_LSPCI="00:02.0 VGA compatible controller: Intel Corporation Panther Lake [Intel Graphics]" ;;
     xps13-wcl) xps13; FAKE_LSPCI="00:02.0 VGA compatible controller: Intel Corporation Wildcat Lake [Intel Graphics]" ;;
@@ -309,6 +313,8 @@ run_leaf() {
     OMARCHY_QUALCOMM_MKINITCPIO_DIR="$root/etc/mkinitcpio.conf.d" \
     OMARCHY_ZENBOOK_UX3480QA_MKINITCPIO_DIR="$root/etc/mkinitcpio.conf.d" \
     OMARCHY_ZENBOOK_UX3480QA_SLEEP_CONFIG_DIR="$root/etc/systemd/sleep.conf.d" \
+    OMARCHY_SNAPDRAGON_X_SLEEP_CONFIG_DIR="$root/etc/systemd/sleep.conf.d" \
+    OMARCHY_VIVOBOOK_S15_WIREPLUMBER_DIR="$root/etc/wireplumber/wireplumber.conf.d" \
     OMARCHY_NVIDIA_MODPROBE_CONFIG="$hw/nvidia.conf" \
     OMARCHY_PCI_DEVICES="$root/sys/bus/pci/devices" \
     OMARCHY_ATH12K_BOARD_STATE="$root/var/lib/ath12k-board-fallback/installed" \
@@ -336,6 +342,8 @@ leaves=(
   hardware/qualcomm/oem-firmware.sh
   hardware/asus/fix-asus-zenbook-14-ux3480qa-boot.sh
   hardware/asus/fix-asus-zenbook-14-ux3480qa-audio.sh
+  hardware/qualcomm/sleep.sh
+  hardware/asus/fix-asus-vivobook-s15-wireplumber.sh
   hardware/dell-xps13-ptl-speaker-firmware.sh
   hardware/fix-ath12k-board-data.sh
   hardware/dell-xps13-sidecar-amps.sh
@@ -417,6 +425,23 @@ hardware/asus/fix-asus-zenbook-14-ux3480qa-audio.sh|zenbook-14-ux3480qa|0|pkg-ad
 hardware/asus/fix-asus-zenbook-14-ux3480qa-audio.sh|zenbook-14-ux3480qa+unreadable|0
 hardware/asus/fix-asus-zenbook-14-ux3480qa-audio.sh|zenbook-14-ux3480qa-not-qualcomm|0
 hardware/asus/fix-asus-zenbook-14-ux3480qa-audio.sh|zenbook-a16|0
+hardware/qualcomm/sleep.sh|yoga-slim7x|0|wrote etc/systemd/sleep.conf.d/omarchy-snapdragon-x-s2idle.conf
+hardware/qualcomm/sleep.sh|x1e78100-only|0|wrote etc/systemd/sleep.conf.d/omarchy-snapdragon-x-s2idle.conf
+hardware/qualcomm/sleep.sh|x1p64100-only|0|wrote etc/systemd/sleep.conf.d/omarchy-snapdragon-x-s2idle.conf
+hardware/qualcomm/sleep.sh|vivobook-s15|0|wrote etc/systemd/sleep.conf.d/omarchy-snapdragon-x-s2idle.conf
+hardware/qualcomm/sleep.sh|zenbook-14-ux3480qa|0|wrote etc/systemd/sleep.conf.d/omarchy-snapdragon-x-s2idle.conf
+hardware/qualcomm/sleep.sh|vivobook-s15+unreadable|0|wrote etc/systemd/sleep.conf.d/omarchy-snapdragon-x-s2idle.conf
+hardware/qualcomm/sleep.sh|vivobook-s15-not-qualcomm|0
+hardware/qualcomm/sleep.sh|zenbook-a16|0
+hardware/qualcomm/sleep.sh|omnibook-ultra-14|0
+hardware/qualcomm/sleep.sh|t14s-gen7|0
+hardware/asus/fix-asus-vivobook-s15-wireplumber.sh|vivobook-s15|0|wrote etc/wireplumber/wireplumber.conf.d/50-omarchy-vivobook-s15-disable-iris.conf
+hardware/asus/fix-asus-vivobook-s15-wireplumber.sh|vivobook-s15+unreadable|0|wrote etc/wireplumber/wireplumber.conf.d/50-omarchy-vivobook-s15-disable-iris.conf
+hardware/asus/fix-asus-vivobook-s15-wireplumber.sh|vivobook-s15-not-qualcomm|0
+hardware/asus/fix-asus-vivobook-s15-wireplumber.sh|yoga-slim7x|0
+hardware/asus/fix-asus-vivobook-s15-wireplumber.sh|zenbook-14-ux3480qa|0
+hardware/asus/fix-asus-vivobook-s15-wireplumber.sh|zenbook-a16|0
+hardware/asus/fix-asus-vivobook-s15-wireplumber.sh|omnibook-ultra-14|0
 hardware/dell-xps13-ptl-speaker-firmware.sh|xps13-ptl|0|pkg-add linux-firmware-cirrus-dx13260
 hardware/dell-xps13-ptl-speaker-firmware.sh|xps13-ptl+unreadable|0
 hardware/dell-xps13-ptl-speaker-firmware.sh|xps13-wcl|0
@@ -447,6 +472,26 @@ user/hardware/fix-nouveau-cursor.sh|nouveau|0|wrote home/.config/hypr/looknfeel.
 user/hardware/fix-nouveau-cursor.sh|nouveau-proprietary|0
 ROWS
 pass "hardware quirks apply on their own hardware and nowhere else"
+
+machine yoga-slim7x
+sleep_drop_in="$root/etc/systemd/sleep.conf.d/omarchy-snapdragon-x-s2idle.conf"
+run_leaf hardware/qualcomm/sleep.sh >/dev/null
+grep -Fqx "MemorySleepMode=s2idle" "$sleep_drop_in" ||
+  fail "Snapdragon X sleep selects suspend to idle" "$(<"$sleep_drop_in")"
+grep -q "AllowSuspend" "$sleep_drop_in" &&
+  fail "Snapdragon X sleep leaves suspend available" "$(<"$sleep_drop_in")"
+run_leaf hardware/qualcomm/sleep.sh >/dev/null
+pass "Snapdragon X sleep writes suspend-to-idle and can be rerun"
+
+machine vivobook-s15
+iris_rule="$root/etc/wireplumber/wireplumber.conf.d/50-omarchy-vivobook-s15-disable-iris.conf"
+run_leaf hardware/asus/fix-asus-vivobook-s15-wireplumber.sh >/dev/null
+grep -Fq 'device.disabled = true' "$iris_rule" ||
+  fail "Vivobook S15 WirePlumber rule disables the video codec" "$(<"$iris_rule")"
+grep -Fq 'v4l2_device.platform-aa00000.video-codec' "$iris_rule" ||
+  fail "Vivobook S15 WirePlumber rule matches the iris codec node" "$(<"$iris_rule")"
+run_leaf hardware/asus/fix-asus-vivobook-s15-wireplumber.sh >/dev/null
+pass "Vivobook S15 WirePlumber rule disables the iris codec and can be rerun"
 
 # --- What the applied quirks leave behind ---
 
