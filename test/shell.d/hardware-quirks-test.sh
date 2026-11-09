@@ -314,6 +314,7 @@ run_leaf() {
     OMARCHY_ZENBOOK_UX3480QA_MKINITCPIO_DIR="$root/etc/mkinitcpio.conf.d" \
     OMARCHY_ZENBOOK_UX3480QA_SLEEP_CONFIG_DIR="$root/etc/systemd/sleep.conf.d" \
     OMARCHY_SNAPDRAGON_X_SLEEP_CONFIG_DIR="$root/etc/systemd/sleep.conf.d" \
+    OMARCHY_VIVOBOOK_S15_WIREPLUMBER_DIR="$root/etc/wireplumber/wireplumber.conf.d" \
     OMARCHY_NVIDIA_MODPROBE_CONFIG="$hw/nvidia.conf" \
     OMARCHY_PCI_DEVICES="$root/sys/bus/pci/devices" \
     OMARCHY_ATH12K_BOARD_STATE="$root/var/lib/ath12k-board-fallback/installed" \
@@ -342,6 +343,7 @@ leaves=(
   hardware/asus/fix-asus-zenbook-14-ux3480qa-boot.sh
   hardware/asus/fix-asus-zenbook-14-ux3480qa-audio.sh
   hardware/qualcomm/sleep.sh
+  hardware/asus/fix-asus-vivobook-s15-wireplumber.sh
   hardware/dell-xps13-ptl-speaker-firmware.sh
   hardware/fix-ath12k-board-data.sh
   hardware/dell-xps13-sidecar-amps.sh
@@ -433,6 +435,13 @@ hardware/qualcomm/sleep.sh|vivobook-s15-not-qualcomm|0
 hardware/qualcomm/sleep.sh|zenbook-a16|0
 hardware/qualcomm/sleep.sh|omnibook-ultra-14|0
 hardware/qualcomm/sleep.sh|t14s-gen7|0
+hardware/asus/fix-asus-vivobook-s15-wireplumber.sh|vivobook-s15|0|wrote etc/wireplumber/wireplumber.conf.d/50-omarchy-vivobook-s15-disable-iris.conf
+hardware/asus/fix-asus-vivobook-s15-wireplumber.sh|vivobook-s15+unreadable|0|wrote etc/wireplumber/wireplumber.conf.d/50-omarchy-vivobook-s15-disable-iris.conf
+hardware/asus/fix-asus-vivobook-s15-wireplumber.sh|vivobook-s15-not-qualcomm|0
+hardware/asus/fix-asus-vivobook-s15-wireplumber.sh|yoga-slim7x|0
+hardware/asus/fix-asus-vivobook-s15-wireplumber.sh|zenbook-14-ux3480qa|0
+hardware/asus/fix-asus-vivobook-s15-wireplumber.sh|zenbook-a16|0
+hardware/asus/fix-asus-vivobook-s15-wireplumber.sh|omnibook-ultra-14|0
 hardware/dell-xps13-ptl-speaker-firmware.sh|xps13-ptl|0|pkg-add linux-firmware-cirrus-dx13260
 hardware/dell-xps13-ptl-speaker-firmware.sh|xps13-ptl+unreadable|0
 hardware/dell-xps13-ptl-speaker-firmware.sh|xps13-wcl|0
@@ -473,6 +482,16 @@ grep -q "AllowSuspend" "$sleep_drop_in" &&
   fail "Snapdragon X sleep leaves suspend available" "$(<"$sleep_drop_in")"
 run_leaf hardware/qualcomm/sleep.sh >/dev/null
 pass "Snapdragon X sleep writes suspend-to-idle and can be rerun"
+
+machine vivobook-s15
+iris_rule="$root/etc/wireplumber/wireplumber.conf.d/50-omarchy-vivobook-s15-disable-iris.conf"
+run_leaf hardware/asus/fix-asus-vivobook-s15-wireplumber.sh >/dev/null
+grep -Fq 'device.disabled = true' "$iris_rule" ||
+  fail "Vivobook S15 WirePlumber rule disables the video codec" "$(<"$iris_rule")"
+grep -Fq 'v4l2_device.platform-aa00000.video-codec' "$iris_rule" ||
+  fail "Vivobook S15 WirePlumber rule matches the iris codec node" "$(<"$iris_rule")"
+run_leaf hardware/asus/fix-asus-vivobook-s15-wireplumber.sh >/dev/null
+pass "Vivobook S15 WirePlumber rule disables the iris codec and can be rerun"
 
 # --- What the applied quirks leave behind ---
 
