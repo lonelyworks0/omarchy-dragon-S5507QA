@@ -29,5 +29,14 @@ for unit in \
   systemctl --user enable --now "$unit" || failed=1
 done
 
+# The unit file is published only on this laptop. Anywhere else the check is
+# false and first-run does not look for it.
+if command -v omarchy-hw-aarch64-qualcomm >/dev/null 2>&1 \
+  && command -v omarchy-hw-match >/dev/null 2>&1 \
+  && omarchy-hw-aarch64-qualcomm \
+  && omarchy-hw-match "S5507QA"; then
+  systemctl --user enable --now omarchy-vivobook-power-display.service || failed=1
+fi
+
 omarchy-hook-install theme-set /usr/share/owe/10-owe-sync
 exit "$failed"

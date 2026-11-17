@@ -1,0 +1,724 @@
+#!/bin/bash
+
+# omarchy:summary=Tune the Vivobook S15 while power-saver is active, or remove that tuning
+# omarchy:args=[status|measure [SECONDS]|uninstall]
+# omarchy:examples=omarchy power vivobook status | omarchy power vivobook measure 30 | omarchy power vivobook uninstall
+
+# ASUS Vivobook S 15 S5507QA only. power-profiles-daemon's power-saver profile
+# on this Snapdragon just drops the CPU ceiling to 1.92 GHz. That barely moves
+# battery draw and stalls a burst of Chromium tabs, so while power-saver is
+# active this raises the ceiling to the balanced level (2.61 GHz), caps the
+# Adreno, enables Wi-Fi power save, and lowers the internal panel's refresh.
+# The panel name, mode, position, and scale come from Hyprland at runtime.
+# A refresh chosen while power-saver is not active is left alone.
+#
+# watch, apply, reset, display-apply, display-reset, and display-watch are the
+# service entry points. status, measure, and uninstall are the user-facing ones.
+
+set -euo pipefail
+
+CONF=${OMARCHY_VIVOBOOK_CONF:-/etc/omarchy/vivobook-s5507qa-power.conf}
+CPU_CAP_KHZ=2611200
+GPU_CAP_HZ=666000000
+WIFI_POWERSAVE=1
+PANEL_SAVER_HZ=60
+
+usage() {
+  cat <<'EOF'
+Usage: omarchy-power-vivobook [status|measure [SECONDS]|uninstall]
+
+status     Show whether this laptop is tuned and which profile is active
+measure    Sample battery watts on performance, balanced, and power-saver, then restore the previous profile
+uninstall  Remove the tuning and hand the CPU ceiling back to power-profiles-daemon
+EOF
+}
+
+on_vivobook() {
+  command -v omarchy-hw-aarch64-qualcomm >/dev/null 2>&1 || return 1
+  command -v omarchy-hw-match >/dev/null 2>&1 || return 1
+  omarchy-hw-aarch64-qualcomm && omarchy-hw-match "S5507QA"
+}
+
+need_root() {
+  if (( EUID == 0 )); then
+    return 0
+  fi
+  # Tests point the sysfs roots at a fixture. A real run writes /sys and is root.
+  if [[ -n ${OMARCHY_VIVOBOOK_CPUFREQ_ROOT:-} || -n ${OMARCHY_VIVOBOOK_DEVFREQ_ROOT:-} ]]; then
+    return 0
+  fi
+  echo "omarchy-power-vivobook: $1 must run as root" >&2
+  exit 1
+}
+
+is_uint() {
+  [[ $1 =~ ^[0-9]+$ ]]
+}
+
+load_conf() {
+  CPU_CAP_KHZ=2611200
+  GPU_CAP_HZ=666000000
+  WIFI_POWERSAVE=1
+  PANEL_SAVER_HZ=60
+  [[ -r $CONF ]] || return 0
+
+  local line key value
+  while IFS= read -r line || [[ -n $line ]]; do
+    [[ $line =~ ^[[:space:]]*([A-Z_]+)=([A-Za-z0-9]*)$ ]] || continue
+    key=${BASH_REMATCH[1]}
+    value=${BASH_REMATCH[2]}
+    case $key in
+      CPU_CAP_KHZ | GPU_CAP_HZ | WIFI_POWERSAVE | PANEL_SAVER_HZ)
+        printf -v "$key" '%s' "$value"
+        ;;
+    esac
+  done <"$CONF"
+}
+
+profile() {
+  local line
+  line=$(busctl get-property net.hadess.PowerProfiles /net/hadess/PowerProfiles net.hadess.PowerProfiles ActiveProfile 2>/dev/null) || return 1
+  [[ $line == s\ \"*\" ]] || return 1
+  line=${line#s \"}
+  line=${line%\"}
+  [[ $line =~ ^[A-Za-z0-9-]+$ ]] || return 1
+  printf '%s\n' "$line"
+}
+
+write_file() {
+  local value=$1 file=$2
+  if [[ ! -w $file ]]; then
+    echo "omarchy-power-vivobook: not writable: $file" >&2
+    return 0
+  fi
+  if ! printf '%s\n' "$value" >"$file"; then
+    echo "omarchy-power-vivobook: failed to write $value to $file" >&2
+  fi
+}
+
+cpufreq_root() {
+  printf '%s\n' "${OMARCHY_VIVOBOOK_CPUFREQ_ROOT:-/sys/devices/system/cpu/cpufreq}"
+}
+
+devfreq_root() {
+  printf '%s\n' "${OMARCHY_VIVOBOOK_DEVFREQ_ROOT:-/sys/class/devfreq}"
+}
+
+net_root() {
+  printf '%s\n' "${OMARCHY_VIVOBOOK_NET_ROOT:-/sys/class/net}"
+}
+
+gpu_dir() {
+  if [[ -n ${OMARCHY_VIVOBOOK_GPU_DIR:-} ]]; then
+    [[ -d $OMARCHY_VIVOBOOK_GPU_DIR ]] || return 1
+    printf '%s\n' "$OMARCHY_VIVOBOOK_GPU_DIR"
+    return 0
+  fi
+
+  local root
+  root=$(devfreq_root)
+  (
+    shopt -s nullglob
+    local candidate
+    for candidate in "$root"/*.gpu; do
+      if [[ -d $candidate ]]; then
+        printf '%s\n' "$candidate"
+        exit 0
+      fi
+    done
+    exit 1
+  )
+}
+
+highest_at_most() {
+  local cap=$1 dir=$2 raw freq best=
+  local -a freqs=()
+  [[ -r $dir/available_frequencies ]] || return 1
+  is_uint "$cap" || return 1
+  raw=$(<"$dir/available_frequencies")
+  read -r -a freqs <<<"$raw"
+  for freq in "${freqs[@]}"; do
+    is_uint "$freq" || continue
+    if (( freq <= cap )); then
+      if [[ -z $best ]] || (( freq > best )); then
+        best=$freq
+      fi
+    fi
+  done
+  [[ -n $best ]] || return 1
+  printf '%s\n' "$best"
+}
+
+highest_freq() {
+  local dir=$1 raw freq best=
+  local -a freqs=()
+  [[ -r $dir/available_frequencies ]] || return 1
+  raw=$(<"$dir/available_frequencies")
+  read -r -a freqs <<<"$raw"
+  for freq in "${freqs[@]}"; do
+    is_uint "$freq" || continue
+    if [[ -z $best ]] || (( freq > best )); then
+      best=$freq
+    fi
+  done
+  [[ -n $best ]] || return 1
+  printf '%s\n' "$best"
+}
+
+apply_cpu_cap() {
+  local cap=${CPU_CAP_KHZ:-} root
+  is_uint "$cap" || return 0
+  (( cap > 0 )) || return 0
+  root=$(cpufreq_root)
+  (
+    shopt -s nullglob
+    local pol hw value
+    for pol in "$root"/policy*; do
+      [[ -r $pol/cpuinfo_max_freq ]] || continue
+      hw=$(<"$pol/cpuinfo_max_freq")
+      value=$cap
+      if is_uint "$hw" && (( value > hw )); then
+        value=$hw
+      fi
+      write_file "$value" "$pol/scaling_max_freq"
+    done
+  )
+}
+
+apply_gpu_cap() {
+  local cap=${GPU_CAP_HZ:-} dir freq
+  is_uint "$cap" || return 0
+  (( cap > 0 )) || return 0
+  dir=$(gpu_dir) || return 0
+  if freq=$(highest_at_most "$cap" "$dir"); then
+    write_file "$freq" "$dir/max_freq"
+  fi
+}
+
+restore_gpu() {
+  local dir freq
+  dir=$(gpu_dir) || return 0
+  freq=$(highest_freq "$dir") || return 0
+  write_file "$freq" "$dir/max_freq"
+}
+
+wifi_power_save() {
+  local mode=$1 root
+  [[ $mode == on || $mode == off ]] || return 0
+  root=$(net_root)
+  (
+    shopt -s nullglob
+    local dir name
+    for dir in "$root"/*/wireless; do
+      name=$(basename "$(dirname "$dir")")
+      iw dev "$name" set power_save "$mode" || true
+    done
+  )
+}
+
+apply_system() {
+  on_vivobook || return 0
+  load_conf
+  local p
+  p=$(profile) || return 0
+  if [[ $p == "power-saver" ]]; then
+    apply_cpu_cap
+    apply_gpu_cap
+    if [[ ${WIFI_POWERSAVE:-0} == 1 ]]; then
+      wifi_power_save on
+    fi
+  else
+    restore_gpu
+    if [[ ${WIFI_POWERSAVE:-0} == 1 ]]; then
+      wifi_power_save off
+    fi
+  fi
+  echo "omarchy-power-vivobook: applied for $p"
+}
+
+reset_system() {
+  load_conf
+  restore_gpu
+  wifi_power_save off
+}
+
+reapply_ppd() {
+  local p other settle
+  p=$(powerprofilesctl get 2>/dev/null) || return 0
+  [[ $p =~ ^[A-Za-z0-9-]+$ ]] || return 0
+  other=balanced
+  [[ $p == "balanced" ]] && other=performance
+  settle=${OMARCHY_VIVOBOOK_PPD_SETTLE:-1}
+  powerprofilesctl set "$other" || return 0
+  sleep "$settle"
+  powerprofilesctl set "$p" || true
+}
+
+# One internal panel, named the same way as omarchy-hyprland-monitor-laptop.
+# Fields: name, scale, x, y, refresh, current mode, saver mode.
+panel_info() {
+  local saver=${1:-0}
+  is_uint "$saver" || saver=0
+  command -v hyprctl >/dev/null 2>&1 || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+  hyprctl monitors -j 2>/dev/null | jq -r --argjson saver "$saver" '
+    def norm: if . == floor then floor else (.*100 | round / 100) end;
+    def advertised($m; $want):
+      [($m.availableModes // [])[]
+        | capture("^(?<size>[0-9]+x[0-9]+)@(?<rate>[0-9.]+)Hz$")
+        | select(.size == "\($m.width)x\($m.height)")
+        | .rate |= tonumber
+        | select(($want < 0) or ((.rate - $want) | fabs) < 0.6)]
+      | sort_by(.rate) | last // null;
+    [.[] | select(.name | test("^(eDP|LVDS|DSI)-"))][0] // null
+    | if . == null then empty else
+        . as $m
+        | ($saver | tonumber) as $target
+        | (advertised($m; $m.refreshRate) // {rate: $m.refreshRate}) as $cur
+        | (if $target > 0 then advertised($m; $target) else null end) as $saver_mode
+        | [
+            $m.name,
+            ($m.scale | tostring),
+            ($m.x | tostring),
+            ($m.y | tostring),
+            ($m.refreshRate | tostring),
+            "\($m.width)x\($m.height)@\($cur.rate | norm)",
+            (if $saver_mode == null then "" else "\($m.width)x\($m.height)@\($saver_mode.rate | norm)" end)
+          ]
+        | join("\t")
+      end
+  '
+}
+
+mode_rate_matches() {
+  local mode=$1 refresh=$2 rate
+  [[ $mode =~ @([0-9]+([.][0-9]+)?)$ ]] || return 1
+  rate=${BASH_REMATCH[1]}
+  awk -v rate="$rate" -v refresh="$refresh" 'BEGIN {
+    diff = rate - refresh
+    if (diff < 0) diff = -diff
+    exit(diff < 0.6 ? 0 : 1)
+  }'
+}
+
+set_panel_mode() {
+  local output=$1 mode=$2 x=$3 y=$4 scale=$5
+  [[ $output =~ ^[A-Za-z0-9._-]+$ ]] || return 1
+  [[ $mode =~ ^[0-9]+x[0-9]+@[0-9]+([.][0-9]+)?$ ]] || return 1
+  [[ $x =~ ^-?[0-9]+$ && $y =~ ^-?[0-9]+$ ]] || return 1
+  [[ $scale =~ ^[0-9]+([.][0-9]+)?$ ]] || return 1
+  hyprctl eval "hl.monitor({ output = \"$output\", mode = \"$mode\", position = \"${x}x${y}\", scale = $scale })" >/dev/null
+  echo "omarchy-power-vivobook: $output mode $mode position ${x}x${y} scale $scale"
+}
+
+display_state_file() {
+  if [[ -n ${OMARCHY_VIVOBOOK_STATE_DIR:-} ]]; then
+    printf '%s\n' "$OMARCHY_VIVOBOOK_STATE_DIR/display"
+  else
+    printf '%s\n' "${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/vivobook-power/display"
+  fi
+}
+
+state_load() {
+  HOLDING=0
+  SAVED_OUTPUT=
+  SAVED_MODE=
+  SAVED_SCALE=
+  SAVED_X=
+  SAVED_Y=
+  SAVED_SAVER_MODE=
+  [[ -r $STATE ]] || return 0
+
+  local line key value
+  while IFS= read -r line || [[ -n $line ]]; do
+    [[ $line =~ ^([a-z_]+)=(.*)$ ]] || continue
+    key=${BASH_REMATCH[1]}
+    value=${BASH_REMATCH[2]}
+    case $key in
+      holding)
+        [[ $value == 0 || $value == 1 ]] && HOLDING=$value
+        ;;
+      output)
+        [[ $value =~ ^[A-Za-z0-9._-]+$ ]] && SAVED_OUTPUT=$value
+        ;;
+      mode)
+        [[ $value =~ ^[0-9]+x[0-9]+@[0-9]+([.][0-9]+)?$ ]] && SAVED_MODE=$value
+        ;;
+      saver_mode)
+        [[ $value =~ ^[0-9]+x[0-9]+@[0-9]+([.][0-9]+)?$ ]] && SAVED_SAVER_MODE=$value
+        ;;
+      scale)
+        [[ $value =~ ^[0-9]+([.][0-9]+)?$ ]] && SAVED_SCALE=$value
+        ;;
+      x)
+        [[ $value =~ ^-?[0-9]+$ ]] && SAVED_X=$value
+        ;;
+      y)
+        [[ $value =~ ^-?[0-9]+$ ]] && SAVED_Y=$value
+        ;;
+    esac
+  done <"$STATE"
+}
+
+state_save() {
+  local dir tmp
+  dir=$(dirname "$STATE")
+  mkdir -p "$dir"
+  tmp=$(mktemp "$dir/display.XXXXXX")
+  cat >"$tmp" <<EOF
+holding=$HOLDING
+output=$SAVED_OUTPUT
+mode=$SAVED_MODE
+scale=$SAVED_SCALE
+x=$SAVED_X
+y=$SAVED_Y
+saver_mode=$SAVED_SAVER_MODE
+EOF
+  mv -f "$tmp" "$STATE"
+}
+
+state_clear() {
+  rm -f "$STATE"
+  HOLDING=0
+}
+
+parse_panel() {
+  local info=$1
+  PANEL_NAME=
+  PANEL_SCALE=
+  PANEL_X=
+  PANEL_Y=
+  PANEL_REFRESH=
+  PANEL_CURRENT_MODE=
+  PANEL_SAVER_MODE=
+  [[ -n $info ]] || return 1
+  IFS=$'\t' read -r PANEL_NAME PANEL_SCALE PANEL_X PANEL_Y PANEL_REFRESH PANEL_CURRENT_MODE PANEL_SAVER_MODE <<<"$info"
+  [[ $PANEL_NAME =~ ^[A-Za-z0-9._-]+$ ]] || return 1
+  [[ $PANEL_SCALE =~ ^[0-9]+([.][0-9]+)?$ ]] || return 1
+  [[ $PANEL_X =~ ^-?[0-9]+$ && $PANEL_Y =~ ^-?[0-9]+$ ]] || return 1
+  return 0
+}
+
+restore_holding() {
+  local info=$1
+  [[ $HOLDING == 1 ]] || return 0
+  [[ -n $info ]] || return 0
+  parse_panel "$info" || return 0
+  if [[ -n $SAVED_OUTPUT && $SAVED_OUTPUT != "$PANEL_NAME" ]]; then
+    return 0
+  fi
+  if [[ -n $SAVED_MODE ]] && ! mode_rate_matches "$SAVED_MODE" "$PANEL_REFRESH"; then
+    set_panel_mode "$PANEL_NAME" "$SAVED_MODE" "$PANEL_X" "$PANEL_Y" "$PANEL_SCALE" || return 0
+  fi
+  state_clear
+}
+
+display_apply() {
+  on_vivobook || return 0
+  load_conf
+  local p info saver
+  p=$(profile) || return 0
+  STATE=$(display_state_file)
+  state_load
+
+  saver=${PANEL_SAVER_HZ:-0}
+  is_uint "$saver" || saver=0
+  info=$(panel_info "$saver") || info=
+
+  if [[ $p != "power-saver" || $saver == 0 ]]; then
+    restore_holding "$info"
+    return 0
+  fi
+
+  [[ -n $info ]] || return 0
+  parse_panel "$info" || return 0
+  if [[ -z $PANEL_SAVER_MODE ]]; then
+    echo "omarchy-power-vivobook: no ${saver} Hz mode for $PANEL_NAME" >&2
+    return 0
+  fi
+  if [[ $HOLDING == 1 && -n $SAVED_OUTPUT && $SAVED_OUTPUT != "$PANEL_NAME" ]]; then
+    return 0
+  fi
+
+  if [[ $HOLDING != 1 ]]; then
+    HOLDING=1
+    SAVED_OUTPUT=$PANEL_NAME
+    SAVED_MODE=$PANEL_CURRENT_MODE
+    SAVED_SCALE=$PANEL_SCALE
+    SAVED_X=$PANEL_X
+    SAVED_Y=$PANEL_Y
+    SAVED_SAVER_MODE=$PANEL_SAVER_MODE
+    state_save
+  fi
+
+  if ! mode_rate_matches "$PANEL_SAVER_MODE" "$PANEL_REFRESH"; then
+    set_panel_mode "$PANEL_NAME" "$PANEL_SAVER_MODE" "$PANEL_X" "$PANEL_Y" "$PANEL_SCALE" || true
+  fi
+}
+
+display_reset() {
+  STATE=$(display_state_file)
+  state_load
+  [[ $HOLDING == 1 ]] || return 0
+  local info
+  info=$(panel_info 0) || info=
+  restore_holding "$info"
+}
+
+watch_bus() {
+  local kind=$1 recheck=$2 line status settle
+  settle=${OMARCHY_VIVOBOOK_PROFILE_SETTLE:-0.5}
+  while true; do
+    if IFS= read -r -t "$recheck" line; then
+      if [[ $line == *ActiveProfile* ]]; then
+        sleep "$settle"
+        if [[ $kind == display ]]; then
+          display_apply
+        else
+          apply_system
+        fi
+      fi
+    else
+      status=$?
+      if (( status > 128 )); then
+        if [[ $kind == display ]]; then
+          display_apply
+        elif [[ $(profile || true) == "power-saver" ]]; then
+          apply_system
+        fi
+      else
+        return 0
+      fi
+    fi
+  done
+}
+
+watch_system() {
+  local recheck
+  need_root watch
+  on_vivobook || exit 0
+  recheck=${OMARCHY_VIVOBOOK_RECHECK:-120}
+  apply_system
+  while true; do
+    busctl monitor --system net.hadess.PowerProfiles 2>/dev/null | watch_bus system "$recheck" || true
+    sleep 5
+  done
+}
+
+display_watch() {
+  local recheck
+  on_vivobook || exit 0
+  recheck=${OMARCHY_VIVOBOOK_DISPLAY_RECHECK:-60}
+  display_apply
+  while true; do
+    busctl monitor --system net.hadess.PowerProfiles 2>/dev/null | watch_bus display "$recheck" || true
+    sleep 5
+  done
+}
+
+battery_power_now() {
+  (
+    shopt -s nullglob
+    local supply
+    for supply in /sys/class/power_supply/*; do
+      [[ -r $supply/type && -r $supply/power_now ]] || continue
+      [[ $(<"$supply/type") == Battery ]] || continue
+      printf '%s\n' "$supply/power_now"
+      exit 0
+    done
+    exit 1
+  )
+}
+
+measure() {
+  local seconds=${1:-30}
+  if ! is_uint "$seconds"; then
+    usage >&2
+    exit 1
+  fi
+  on_vivobook || {
+    echo "omarchy-power-vivobook: measure runs on the Vivobook S 15 S5507QA" >&2
+    exit 1
+  }
+
+  local bat previous p sum count value settle interval samples i
+  if [[ -n ${OMARCHY_VIVOBOOK_BATTERY:-} ]]; then
+    bat=$OMARCHY_VIVOBOOK_BATTERY
+  else
+    bat=$(battery_power_now) || {
+      echo "omarchy-power-vivobook: no battery power_now" >&2
+      exit 1
+    }
+  fi
+  [[ -r $bat ]] || {
+    echo "omarchy-power-vivobook: cannot read $bat" >&2
+    exit 1
+  }
+
+  previous=$(profile || true)
+  settle=${OMARCHY_VIVOBOOK_MEASURE_SETTLE:-5}
+  interval=${OMARCHY_VIVOBOOK_MEASURE_INTERVAL:-2}
+  for p in performance balanced power-saver; do
+    powerprofilesctl set "$p" || exit 1
+    sleep "$settle"
+    sum=0
+    count=0
+    if (( seconds > 0 && interval > 0 )); then
+      samples=$((seconds / interval))
+      (( samples > 0 )) || samples=1
+      for ((i = 0; i < samples; i++)); do
+        value=$(<"$bat")
+        value=${value#-}
+        is_uint "$value" || value=0
+        sum=$((sum + value))
+        count=$((count + 1))
+        sleep "$interval"
+      done
+    fi
+    if (( count > 0 )); then
+      awk -v sum="$sum" -v count="$count" -v profile_name="$p" 'BEGIN { printf "%s avg_W=%.2f samples=%d\n", profile_name, sum / count / 1000000, count }'
+    else
+      echo "$p avg_W=n/a samples=0"
+    fi
+  done
+  if [[ -n $previous ]]; then
+    powerprofilesctl set "$previous" || true
+    echo "restored: $previous"
+  fi
+}
+
+status() {
+  if on_vivobook; then
+    echo "Machine: ASUS Vivobook S 15 S5507QA"
+  else
+    echo "Machine: not a Vivobook S 15 S5507QA; this tuning is not applied"
+    return 0
+  fi
+  load_conf
+  local p
+  p=$(profile || true)
+  echo "Profile: ${p:-unknown}"
+  echo "Config: $CONF"
+  echo "CPU cap: ${CPU_CAP_KHZ:-unchanged} kHz"
+  echo "GPU cap: ${GPU_CAP_HZ:-unchanged} Hz"
+  echo "Wi-Fi power save in power-saver: ${WIFI_POWERSAVE:-0}"
+  echo "Panel saver refresh: ${PANEL_SAVER_HZ:-0} Hz"
+  STATE=$(display_state_file)
+  state_load
+  if [[ $HOLDING == 1 ]]; then
+    echo "Panel hold: $SAVED_OUTPUT $SAVED_MODE -> ${SAVED_SAVER_MODE:-unset}"
+  else
+    echo "Panel hold: none"
+  fi
+  local system_state display_state
+  system_state=$(systemctl is-active omarchy-vivobook-power.service 2>/dev/null || true)
+  display_state=$(systemctl --user is-active omarchy-vivobook-power-display.service 2>/dev/null || true)
+  echo "System service: ${system_state:-unknown}"
+  echo "Display service: ${display_state:-unknown}"
+}
+
+uninstall() {
+  if (( EUID != 0 )) && [[ -z ${OMARCHY_VIVOBOOK_SYSTEMD_DIR:-} ]]; then
+    exec sudo -- "$0" uninstall
+  fi
+
+  local systemd_dir user_systemd_dir user runtime uid wayland signature session
+  systemd_dir=${OMARCHY_VIVOBOOK_SYSTEMD_DIR:-/etc/systemd/system}
+  user_systemd_dir=${OMARCHY_VIVOBOOK_USER_SYSTEMD_DIR:-/etc/systemd/user}
+
+  systemctl disable --now omarchy-vivobook-power.service 2>/dev/null || true
+  rm -f "$systemd_dir/omarchy-vivobook-power.service"
+  systemctl daemon-reload 2>/dev/null || true
+
+  user=${SUDO_USER:-${OMARCHY_VIVOBOOK_USER:-}}
+  if [[ -n $user && $user != root ]]; then
+    uid=$(id -u "$user")
+    runtime=${XDG_RUNTIME_DIR:-/run/user/$uid}
+    if [[ -S $runtime/bus ]]; then
+      runuser -u "$user" -- env XDG_RUNTIME_DIR="$runtime" DBUS_SESSION_BUS_ADDRESS="unix:path=$runtime/bus" \
+        systemctl --user disable --now omarchy-vivobook-power-display.service || true
+      runuser -u "$user" -- env XDG_RUNTIME_DIR="$runtime" DBUS_SESSION_BUS_ADDRESS="unix:path=$runtime/bus" \
+        systemctl --user daemon-reload || true
+      # sudo drops the session environment. The panel restore needs the
+      # compositor variables the user manager already imported.
+      wayland=${WAYLAND_DISPLAY:-}
+      signature=${HYPRLAND_INSTANCE_SIGNATURE:-}
+      if [[ -z $wayland || -z $signature ]]; then
+        session=$(runuser -u "$user" -- systemctl --user show-environment 2>/dev/null || true)
+        if [[ -z $wayland ]]; then
+          wayland=$(printf '%s\n' "$session" | sed -n 's/^WAYLAND_DISPLAY=//p' | head -n 1)
+        fi
+        if [[ -z $signature ]]; then
+          signature=$(printf '%s\n' "$session" | sed -n 's/^HYPRLAND_INSTANCE_SIGNATURE=//p' | head -n 1)
+        fi
+      fi
+      runuser -u "$user" -- env \
+        XDG_RUNTIME_DIR="$runtime" \
+        DBUS_SESSION_BUS_ADDRESS="unix:path=$runtime/bus" \
+        WAYLAND_DISPLAY="$wayland" \
+        HYPRLAND_INSTANCE_SIGNATURE="$signature" \
+        OMARCHY_VIVOBOOK_STATE_DIR="${OMARCHY_VIVOBOOK_STATE_DIR:-}" \
+        "$0" display-reset || true
+    fi
+  elif [[ -S ${XDG_RUNTIME_DIR:-}/bus ]]; then
+    systemctl --user disable --now omarchy-vivobook-power-display.service || true
+    systemctl --user daemon-reload || true
+    display_reset || true
+  fi
+
+  rm -f "$user_systemd_dir/omarchy-vivobook-power-display.service"
+  reset_system || true
+  reapply_ppd || true
+
+  if [[ -f $CONF ]]; then
+    mv -f "$CONF" "${CONF}.removed"
+  fi
+  echo "Removed Vivobook power-saver tuning."
+  echo "Wi-Fi power save is off, the GPU cap is cleared, and power-profiles-daemon owns the CPU ceiling again."
+  echo "A copy of the config is at ${CONF}.removed."
+  echo "Install again with the Vivobook power scripts under install/hardware/asus and install/user/hardware/asus."
+}
+
+action=${1:-status}
+if (($# > 0)); then
+  shift
+fi
+
+case $action in
+  status)
+    status
+    ;;
+  apply)
+    need_root apply
+    apply_system
+    ;;
+  reset)
+    need_root reset
+    reset_system
+    ;;
+  watch)
+    watch_system
+    ;;
+  display-apply)
+    display_apply
+    ;;
+  display-reset)
+    display_reset
+    ;;
+  display-watch)
+    display_watch
+    ;;
+  measure)
+    measure "${1:-30}"
+    ;;
+  uninstall)
+    uninstall
+    ;;
+  -h | --help)
+    usage
+    ;;
+  *)
+    usage >&2
+    exit 1
+    ;;
+esac

@@ -1,0 +1,15 @@
+[Unit]
+Description=Vivobook S15 power-saver tuning (CPU ceiling, GPU cap, Wi-Fi power save)
+After=power-profiles-daemon.service NetworkManager.service
+Wants=power-profiles-daemon.service
+ConditionPathExists=/etc/omarchy/vivobook-s5507qa-power.conf
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/omarchy-power-vivobook watch
+ExecStopPost=/usr/bin/omarchy-power-vivobook reset
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
