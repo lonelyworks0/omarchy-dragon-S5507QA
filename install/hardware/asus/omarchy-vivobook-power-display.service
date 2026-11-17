@@ -1,0 +1,16 @@
+[Unit]
+Description=Vivobook S15 internal panel at a lower refresh while power-saver is active
+PartOf=graphical-session.target
+After=graphical-session.target wayland-session-waitenv.service
+ConditionPathExists=/etc/omarchy/vivobook-s5507qa-power.conf
+ConditionEnvironment=WAYLAND_DISPLAY
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/omarchy-power-vivobook display-watch
+ExecStopPost=/usr/bin/omarchy-power-vivobook display-reset
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=graphical-session.target
