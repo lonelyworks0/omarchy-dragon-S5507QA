@@ -1,0 +1,150 @@
+#!/bin/bash
+
+# omarchy:summary=Install or remove the Vivobook S15 speaker, suspend-to-idle, and Qualcomm iris WirePlumber fixes
+# omarchy:args=[status|install|uninstall]
+# omarchy:examples=omarchy hw vivobook s5507qa | omarchy hw vivobook s5507qa install | omarchy hw vivobook s5507qa uninstall
+
+# ASUS Vivobook S 15 S5507QA keeps its SoundWire speaker amps out of runtime
+# suspend and suspends to idle. Every Qualcomm machine also gets the
+# WirePlumber rule that skips the iris video codec. status is the default.
+# install and uninstall change root-owned files and re-exec with sudo.
+
+set -euo pipefail
+
+rules_dir=${OMARCHY_VIVOBOOK_UDEV_DIR:-/etc/udev/rules.d}
+sleep_dir=${OMARCHY_VIVOBOOK_SLEEP_DIR:-/etc/systemd/sleep.conf.d}
+iris_dir=${OMARCHY_QUALCOMM_WIREPLUMBER_DIR:-/etc/wireplumber/wireplumber.conf.d}
+rules_file=$rules_dir/90-vivobook-s15-soundwire-no-runtime-pm.rules
+sleep_file=$sleep_dir/50-vivobook-s2idle.conf
+iris_file=$iris_dir/50-disable-qcom-iris-v4l2.conf
+
+usage() {
+  cat <<'EOF'
+Usage: omarchy-hw-vivobook-s5507qa [status|install|uninstall]
+
+status     Show whether these fixes are installed
+install    Install the fixes this machine qualifies for
+uninstall  Remove the speaker, suspend, and iris WirePlumber fixes
+EOF
+}
+
+action=${1:-status}
+if (( $# > 1 )); then
+  usage >&2
+  exit 1
+fi
+
+case $action in
+  status | install | uninstall) ;;
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  *)
+    usage >&2
+    exit 1
+    ;;
+esac
+
+# Fixture directories mean a test. A real install and uninstall write /etc.
+under_test=0
+if [[ -n ${OMARCHY_VIVOBOOK_UDEV_DIR:-} || -n ${OMARCHY_VIVOBOOK_SLEEP_DIR:-} || -n ${OMARCHY_QUALCOMM_WIREPLUMBER_DIR:-} || -n ${OMARCHY_SOUNDWIRE_SYSFS:-} ]]; then
+  under_test=1
+fi
+
+if [[ $action != status ]] && (( EUID != 0 )) && (( under_test == 0 )); then
+  if [[ -z ${OMARCHY_PATH:-} ]]; then
+    echo "omarchy-hw-vivobook-s5507qa: OMARCHY_PATH is not set" >&2
+    exit 1
+  fi
+  exec sudo -- env PATH="$PATH" OMARCHY_PATH="$OMARCHY_PATH" "$0" "$action"
+fi
+
+if [[ -z ${OMARCHY_PATH:-} ]]; then
+  echo "omarchy-hw-vivobook-s5507qa: OMARCHY_PATH is not set" >&2
+  exit 1
+fi
+
+restart_user_wireplumber() {
+  local user runtime
+  # Tests point the config at a scratch directory. Nothing real is restarted.
+  [[ -z ${OMARCHY_QUALCOMM_WIREPLUMBER_DIR:-} ]] || return 0
+
+  user=${SUDO_USER:-}
+  if [[ -n $user && $user != root ]]; then
+    runtime=/run/user/$(id -u "$user")
+    [[ -S $runtime/bus ]] || return 0
+    runuser -u "$user" -- env \
+      XDG_RUNTIME_DIR="$runtime" \
+      DBUS_SESSION_BUS_ADDRESS="unix:path=$runtime/bus" \
+      systemctl --user try-restart wireplumber.service || true
+    return 0
+  fi
+
+  runtime=${XDG_RUNTIME_DIR:-}
+  if [[ -n $runtime && -S $runtime/bus ]]; then
+    systemctl --user try-restart wireplumber.service || true
+  fi
+}
+
+status() {
+  if omarchy-hw-aarch64-qualcomm && omarchy-hw-match "S5507QA"; then
+    echo "Machine: ASUS Vivobook S 15 S5507QA"
+  elif omarchy-hw-aarch64-qualcomm; then
+    echo "Machine: Qualcomm, not a Vivobook S 15 S5507QA"
+  else
+    echo "Machine: not a Vivobook S 15 S5507QA"
+  fi
+
+  if [[ -f $rules_file ]]; then
+    echo "SoundWire runtime PM: installed"
+  else
+    echo "SoundWire runtime PM: not installed"
+  fi
+
+  if [[ -f $sleep_file ]]; then
+    echo "Suspend: s2idle"
+  else
+    echo "Suspend: kernel default"
+  fi
+
+  if [[ -f $iris_file ]]; then
+    echo "Iris video codec: disabled in WirePlumber"
+  else
+    echo "Iris video codec: unchanged"
+  fi
+}
+
+install_fixes() {
+  bash "$OMARCHY_PATH/install/hardware/asus/vivobook-s5507qa.sh" install
+  bash "$OMARCHY_PATH/install/hardware/qualcomm/disable-iris-v4l2.sh" install
+  if omarchy-hw-aarch64-qualcomm; then
+    restart_user_wireplumber
+  fi
+}
+
+uninstall_fixes() {
+  local had_iris=0
+  if [[ -f $iris_file ]]; then
+    had_iris=1
+  fi
+  bash "$OMARCHY_PATH/install/hardware/asus/vivobook-s5507qa.sh" uninstall
+  bash "$OMARCHY_PATH/install/hardware/qualcomm/disable-iris-v4l2.sh" uninstall
+  if (( had_iris == 1 )); then
+    restart_user_wireplumber
+  fi
+  echo "Removed the Vivobook S15 speaker and suspend fixes and the Qualcomm iris WirePlumber rule."
+  echo "Install them again with: omarchy hw vivobook s5507qa install"
+}
+
+case $action in
+  status)
+    status
+    ;;
+  install)
+    install_fixes
+    ;;
+  uninstall)
+    uninstall_fixes
+    ;;
+esac
