@@ -9,9 +9,17 @@ test_tmp=$(mktemp -d)
 trap 'rm -rf "$test_tmp"' EXIT
 
 mkdir -p "$test_tmp/bin" "$test_tmp/state" "$test_tmp/firmware" "$test_tmp/home"
+# A DMI match on S5507QA would also select the X Elite S5507QAD. The checker
+# must ask the device tree, and this stub records whichever it actually asks.
 cat >"$test_tmp/bin/omarchy-hw-match" <<'STUB'
 #!/bin/bash
-[[ -e $OMARCHY_TEST_VIVOBOOK && $1 == S5507QA ]]
+printf 'dmi %s\n' "$1" >>"$OMARCHY_TEST_MATCH_LOG"
+exit 1
+STUB
+cat >"$test_tmp/bin/omarchy-hw-match-device-tree" <<'STUB'
+#!/bin/bash
+printf 'dt %s\n' "$1" >>"$OMARCHY_TEST_MATCH_LOG"
+[[ -e $OMARCHY_TEST_VIVOBOOK && $1 == asus,vivobook-s15-x1p4 ]]
 STUB
 # Stand-in for bsdtar: unzip the one member the checker asks for.
 cat >"$test_tmp/bin/bsdtar" <<'STUB'
@@ -39,12 +47,14 @@ with zipfile.ZipFile(archive) as zipped:
     target.write_bytes(zipped.read(names[wanted]))
 PY
 STUB
-chmod +x "$test_tmp/bin/omarchy-hw-match" "$test_tmp/bin/bsdtar"
+chmod +x "$test_tmp/bin/omarchy-hw-match" "$test_tmp/bin/omarchy-hw-match-device-tree" "$test_tmp/bin/bsdtar"
 
 export PATH="$test_tmp/bin:$PATH"
 export OMARCHY_OEM_FIRMWARE_STATE="$test_tmp/state"
 export OMARCHY_FIRMWARE_ROOT="$test_tmp/firmware"
 export OMARCHY_TEST_VIVOBOOK="$test_tmp/vivobook"
+export OMARCHY_TEST_MATCH_LOG="$test_tmp/match.log"
+: >"$OMARCHY_TEST_MATCH_LOG"
 unset OMARCHY_UPDATE_UNATTENDED OMARCHY_OEM_FIRMWARE_ASSUME_YES OMARCHY_OEM_FIRMWARE_ASSUME_NO
 unset OMARCHY_IRIS_DT_FIRMWARE OMARCHY_ASUS_DRIVERS_URL
 
@@ -160,7 +170,12 @@ STUB
 chmod +x "$test_tmp/bin/curl"
 run_check
 [[ ! -e $test_tmp/state/vivobook-s5507qa.state ]] || fail "another machine records firmware state"
-pass "other machines are left alone"
+grep -qx 'dt asus,vivobook-s15-x1p4' "$OMARCHY_TEST_MATCH_LOG" ||
+  fail "the firmware check matches the X Plus device tree" "$(cat "$OMARCHY_TEST_MATCH_LOG")"
+if grep -q '^dmi ' "$OMARCHY_TEST_MATCH_LOG"; then
+  fail "the firmware check does not match S5507QA in DMI" "$(cat "$OMARCHY_TEST_MATCH_LOG")"
+fi
+pass "other machines are left alone, and the X Plus match is the device tree"
 
 rm "$test_tmp/bin/curl"
 touch "$OMARCHY_TEST_VIVOBOOK"
