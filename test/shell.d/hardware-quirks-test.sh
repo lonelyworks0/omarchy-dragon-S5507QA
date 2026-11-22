@@ -252,6 +252,8 @@ machine() {
     t14s-21n1-not-qualcomm) dmi product_name 21N10000US; FAKE_PLATFORM=aarch64 ;;
     t14-gen4) dmi product_name 21F60000US ;;
     yoga-slim7x) dmi product_name 83ED; FAKE_PLATFORM=aarch64-qualcomm; FAKE_COMPATIBLE="lenovo,yoga-slim7x qcom,x1e80100" ;;
+    vivobook-s15) dmi sys_vendor ASUS; dmi product_name "Vivobook S 15 S5507QA"; FAKE_PLATFORM=aarch64-qualcomm ;;
+    vivobook-s15-not-qualcomm) dmi sys_vendor ASUS; dmi product_name "Vivobook S 15 S5507QA"; FAKE_PLATFORM=aarch64 ;;
     zenbook-a16) dmi sys_vendor ASUS; dmi product_name "Zenbook A16 UX3607OA"; FAKE_PLATFORM=aarch64-qualcomm ;;
     zenbook-a16-not-qualcomm) dmi sys_vendor ASUS; dmi product_name "Zenbook A16 UX3607OA"; FAKE_PLATFORM=aarch64 ;;
     omnibook-ultra-14) dmi sys_vendor HP; dmi product_name "HP OmniBook Ultra Laptop 14-kg0xxx"; FAKE_PLATFORM=aarch64-qualcomm; FAKE_COMPATIBLE="hp,omnibook-ultra-kg0xxx qcom,glymur" ;;
@@ -309,6 +311,10 @@ run_leaf() {
     OMARCHY_QUALCOMM_MKINITCPIO_DIR="$root/etc/mkinitcpio.conf.d" \
     OMARCHY_ZENBOOK_UX3480QA_MKINITCPIO_DIR="$root/etc/mkinitcpio.conf.d" \
     OMARCHY_ZENBOOK_UX3480QA_SLEEP_CONFIG_DIR="$root/etc/systemd/sleep.conf.d" \
+    OMARCHY_VIVOBOOK_UDEV_DIR="$root/etc/udev/rules.d" \
+    OMARCHY_VIVOBOOK_SLEEP_DIR="$root/etc/systemd/sleep.conf.d" \
+    OMARCHY_QUALCOMM_WIREPLUMBER_DIR="$root/etc/wireplumber/wireplumber.conf.d" \
+    OMARCHY_SOUNDWIRE_SYSFS="$root/sys/bus/platform/drivers/qcom-soundwire" \
     OMARCHY_NVIDIA_MODPROBE_CONFIG="$hw/nvidia.conf" \
     OMARCHY_PCI_DEVICES="$root/sys/bus/pci/devices" \
     OMARCHY_ATH12K_BOARD_STATE="$root/var/lib/ath12k-board-fallback/installed" \
@@ -336,6 +342,8 @@ leaves=(
   hardware/qualcomm/oem-firmware.sh
   hardware/asus/fix-asus-zenbook-14-ux3480qa-boot.sh
   hardware/asus/fix-asus-zenbook-14-ux3480qa-audio.sh
+  hardware/asus/vivobook-s5507qa.sh
+  hardware/qualcomm/disable-iris-v4l2.sh
   hardware/dell-xps13-ptl-speaker-firmware.sh
   hardware/fix-ath12k-board-data.sh
   hardware/dell-xps13-sidecar-amps.sh
@@ -417,6 +425,19 @@ hardware/asus/fix-asus-zenbook-14-ux3480qa-audio.sh|zenbook-14-ux3480qa|0|pkg-ad
 hardware/asus/fix-asus-zenbook-14-ux3480qa-audio.sh|zenbook-14-ux3480qa+unreadable|0
 hardware/asus/fix-asus-zenbook-14-ux3480qa-audio.sh|zenbook-14-ux3480qa-not-qualcomm|0
 hardware/asus/fix-asus-zenbook-14-ux3480qa-audio.sh|zenbook-a16|0
+hardware/asus/vivobook-s5507qa.sh|vivobook-s15|0|wrote etc/udev/rules.d/90-vivobook-s15-soundwire-no-runtime-pm.rules|wrote etc/systemd/sleep.conf.d/50-vivobook-s2idle.conf
+hardware/asus/vivobook-s5507qa.sh|vivobook-s15+unreadable|0
+hardware/asus/vivobook-s5507qa.sh|vivobook-s15-not-qualcomm|0
+hardware/asus/vivobook-s5507qa.sh|yoga-slim7x|0
+hardware/asus/vivobook-s5507qa.sh|zenbook-14-ux3480qa|0
+hardware/asus/vivobook-s5507qa.sh|zenbook-a16|0
+hardware/qualcomm/disable-iris-v4l2.sh|vivobook-s15|0|wrote etc/wireplumber/wireplumber.conf.d/50-disable-qcom-iris-v4l2.conf
+hardware/qualcomm/disable-iris-v4l2.sh|vivobook-s15+unreadable|0|wrote etc/wireplumber/wireplumber.conf.d/50-disable-qcom-iris-v4l2.conf
+hardware/qualcomm/disable-iris-v4l2.sh|vivobook-s15-not-qualcomm|0
+hardware/qualcomm/disable-iris-v4l2.sh|yoga-slim7x|0|wrote etc/wireplumber/wireplumber.conf.d/50-disable-qcom-iris-v4l2.conf
+hardware/qualcomm/disable-iris-v4l2.sh|zenbook-14-ux3480qa|0|wrote etc/wireplumber/wireplumber.conf.d/50-disable-qcom-iris-v4l2.conf
+hardware/qualcomm/disable-iris-v4l2.sh|zenbook-a16|0|wrote etc/wireplumber/wireplumber.conf.d/50-disable-qcom-iris-v4l2.conf
+hardware/qualcomm/disable-iris-v4l2.sh|plain|0
 hardware/dell-xps13-ptl-speaker-firmware.sh|xps13-ptl|0|pkg-add linux-firmware-cirrus-dx13260
 hardware/dell-xps13-ptl-speaker-firmware.sh|xps13-ptl+unreadable|0
 hardware/dell-xps13-ptl-speaker-firmware.sh|xps13-wcl|0
@@ -474,3 +495,95 @@ run_leaf user/hardware/fix-nouveau-cursor.sh >/dev/null
 (( $(grep -c 'no_hardware_cursors = true' "$root/home/.config/hypr/looknfeel.lua") == 1 )) ||
   fail "nouveau cursor setup enables software cursors once however often it runs"
 pass "nouveau cursor setup is idempotent"
+
+# The command is what a person runs. The leaves above are what setup sources.
+vivobook_cmd() {
+  HOME="$root/home" OMARCHY_PATH="$ROOT" PATH="$stub_bin:$ROOT/bin:$PATH" \
+    FAKE_HW="$hw" \
+    OMARCHY_VIVOBOOK_UDEV_DIR="$root/etc/udev/rules.d" \
+    OMARCHY_VIVOBOOK_SLEEP_DIR="$root/etc/systemd/sleep.conf.d" \
+    OMARCHY_QUALCOMM_WIREPLUMBER_DIR="$root/etc/wireplumber/wireplumber.conf.d" \
+    OMARCHY_SOUNDWIRE_SYSFS="$root/sys/bus/platform/drivers/qcom-soundwire" \
+    bash "$ROOT/bin/omarchy-hw-vivobook-s5507qa" "$@"
+}
+
+rules_file=$root/etc/udev/rules.d/90-vivobook-s15-soundwire-no-runtime-pm.rules
+sleep_file=$root/etc/systemd/sleep.conf.d/50-vivobook-s2idle.conf
+iris_file=$root/etc/wireplumber/wireplumber.conf.d/50-disable-qcom-iris-v4l2.conf
+soundwire_control=$root/sys/bus/platform/drivers/qcom-soundwire/controller/power/control
+
+machine plain
+[[ $(vivobook_cmd status) == $'Machine: not a Vivobook S 15 S5507QA\nSoundWire runtime PM: not installed\nSuspend: kernel default\nIris video codec: unchanged' ]] ||
+  fail "Vivobook status on other hardware names neither the laptop nor the fixes" "$(vivobook_cmd status)"
+vivobook_cmd install >/dev/null
+[[ ! -e $rules_file && ! -e $sleep_file && ! -e $iris_file ]] ||
+  fail "Vivobook install writes nothing on other hardware"
+pass "Vivobook fixes stay off other hardware"
+
+machine yoga-slim7x
+[[ $(vivobook_cmd status) == $'Machine: Qualcomm, not a Vivobook S 15 S5507QA\nSoundWire runtime PM: not installed\nSuspend: kernel default\nIris video codec: unchanged' ]] ||
+  fail "Vivobook status on another Qualcomm machine keeps the speaker and sleep fixes off" "$(vivobook_cmd status)"
+vivobook_cmd install >/dev/null
+[[ ! -e $rules_file && ! -e $sleep_file && -f $iris_file ]] ||
+  fail "another Qualcomm machine gets only the iris WirePlumber rule"
+vivobook_cmd uninstall >/dev/null
+[[ ! -e $iris_file ]] || fail "uninstall removes the iris WirePlumber rule from another Qualcomm machine"
+pass "Qualcomm machines other than the Vivobook get only the iris WirePlumber rule"
+
+machine vivobook-s15
+mkdir -p "$(dirname "$soundwire_control")"
+printf 'auto\n' >"$soundwire_control"
+if (( EUID != 0 )); then
+  locked_control=$root/sys/bus/platform/drivers/qcom-soundwire/locked/power/control
+  mkdir -p "$(dirname "$locked_control")"
+  printf 'auto\n' >"$locked_control"
+  chmod a-w "$locked_control"
+fi
+decoy_sleep=$root/etc/systemd/sleep.conf.d/zenbook-14-ux3480qa.conf
+decoy_rule=$root/etc/udev/rules.d/71-omarchy-gb10-cpuidle.rules
+mkdir -p "$(dirname "$decoy_sleep")" "$(dirname "$decoy_rule")"
+printf 'keep\n' >"$decoy_sleep"
+printf 'keep\n' >"$decoy_rule"
+
+[[ $(vivobook_cmd status) == $'Machine: ASUS Vivobook S 15 S5507QA\nSoundWire runtime PM: not installed\nSuspend: kernel default\nIris video codec: unchanged' ]] ||
+  fail "Vivobook status before install says the fixes are absent" "$(vivobook_cmd status)"
+vivobook_cmd install >/dev/null
+[[ $(<"$rules_file") == 'ACTION=="add|bind", SUBSYSTEM=="platform", DRIVER=="qcom-soundwire", ATTR{power/control}="on"' ]] ||
+  fail "Vivobook SoundWire rule keeps the controllers powered" "$(<"$rules_file")"
+[[ $(<"$sleep_file") == $'[Sleep]\nMemorySleepMode=s2idle' ]] ||
+  fail "Vivobook suspends to idle" "$(<"$sleep_file")"
+[[ $(stat -c %a "$rules_file") == 644 && $(stat -c %a "$sleep_file") == 644 ]] ||
+  fail "Vivobook speaker and sleep files are not writable by other users"
+cmp -s "$ROOT/install/hardware/qualcomm/50-disable-qcom-iris-v4l2.conf" "$iris_file" ||
+  fail "Vivobook WirePlumber rule is the shipped iris config"
+grep -Fq 'device.disabled = true' "$iris_file" ||
+  fail "Vivobook WirePlumber rule disables the video codec"
+grep -Fq 'v4l2_device.platform-aa00000.video-codec' "$iris_file" ||
+  fail "Vivobook WirePlumber rule matches the iris codec node"
+[[ $(<"$soundwire_control") == on ]] ||
+  fail "Vivobook install powers SoundWire controllers that are already bound" "$(<"$soundwire_control")"
+if (( EUID != 0 )); then
+  [[ $(<"$locked_control") == auto ]] ||
+    fail "Vivobook install leaves an unwritable SoundWire control alone" "$(<"$locked_control")"
+fi
+vivobook_cmd install >/dev/null
+[[ $(<"$rules_file") == 'ACTION=="add|bind", SUBSYSTEM=="platform", DRIVER=="qcom-soundwire", ATTR{power/control}="on"' ]] ||
+  fail "installing the Vivobook fixes again leaves the SoundWire rule in place"
+[[ $(vivobook_cmd status) == $'Machine: ASUS Vivobook S 15 S5507QA\nSoundWire runtime PM: installed\nSuspend: s2idle\nIris video codec: disabled in WirePlumber' ]] ||
+  fail "Vivobook status reports the installed fixes" "$(vivobook_cmd status)"
+
+vivobook_cmd uninstall >/dev/null
+[[ ! -e $rules_file && ! -e $sleep_file && ! -e $iris_file ]] ||
+  fail "uninstall removes the Vivobook speaker, sleep, and iris files"
+[[ $(<"$soundwire_control") == auto ]] ||
+  fail "uninstall returns SoundWire controllers to runtime PM" "$(<"$soundwire_control")"
+[[ $(<"$decoy_sleep") == keep && $(<"$decoy_rule") == keep ]] ||
+  fail "uninstall leaves other sleep and udev files in place"
+[[ $(vivobook_cmd status) == $'Machine: ASUS Vivobook S 15 S5507QA\nSoundWire runtime PM: not installed\nSuspend: kernel default\nIris video codec: unchanged' ]] ||
+  fail "Vivobook status after uninstall says the fixes are gone" "$(vivobook_cmd status)"
+pass "Vivobook S15 fixes install, report their state, and uninstall"
+
+if bash "$ROOT/bin/omarchy-hw-vivobook-s5507qa" nonsense >/dev/null 2>&1; then
+  fail "the Vivobook command rejects an unknown action"
+fi
+pass "the Vivobook command rejects an unknown action"
