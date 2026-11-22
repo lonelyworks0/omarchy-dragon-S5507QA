@@ -59,6 +59,9 @@ run_logged "$OMARCHY_INSTALL/hardware/qualcomm/glymur-display.sh"
 run_logged "$OMARCHY_INSTALL/hardware/asus/fix-asus-zenbook-a16-firmware.sh"
 run_logged "$OMARCHY_INSTALL/hardware/qualcomm/oem-firmware.sh"
 run_logged "$OMARCHY_INSTALL/hardware/qualcomm/firmware.sh"
+# Board firmware and the X Plus speaker fixes. Installing the package here
+# re-runs qualcomm/firmware.sh so the DSP driver is not left held off.
+run_logged "$OMARCHY_INSTALL/hardware/asus/fix-asus-vivobook-s15-xplus.sh"
 run_logged "$OMARCHY_INSTALL/hardware/qualcomm/camera.sh"
 run_logged "$OMARCHY_INSTALL/hardware/qualcomm/disable-iris-v4l2.sh"
 run_logged "$OMARCHY_INSTALL/hardware/qualcomm/video-decode.sh"

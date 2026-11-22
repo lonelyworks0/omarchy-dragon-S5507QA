@@ -121,6 +121,17 @@ printf 'pkg-drop %s\n' "$*" >>"$CALLS"
 SH
 
 # The firmware the device tree names that is not installed yet.
+# firmware.sh asks whether root is on USB. A stub keeps that off the host.
+cat >"$stub_bin/findmnt" <<'SH'
+#!/bin/bash
+exit 1
+SH
+
+cat >"$stub_bin/lsblk" <<'SH'
+#!/bin/bash
+exit 1
+SH
+
 cat >"$stub_bin/qcom-firmware-extract" <<'SH'
 #!/bin/bash
 if [[ $1 == "--list-missing" && -n $FAKE_MISSING_FIRMWARE ]]; then
@@ -159,6 +170,7 @@ qcom-firmware-x1e80100-microsoft microsoft-surface-pro-11-firmware
 qcom-firmware-x1e80100-microsoft-romulus microsoft-surface-laptop-7-firmware
 qcom-firmware-x1e80100-microsoft-denali microsoft-surface-pro-11-firmware
 qcom-firmware-x1e80100-lenovo-91b6 lenovo-ideacentre-mini-x-firmware
+asus-vivobook-s15-firmware asus-vivobook-s15-firmware
 TXT
 
 cat >"$stub_bin/dell-xps13-sidecar-amps-apply" <<'SH'
@@ -189,6 +201,7 @@ chmod +x "$stub_bin"/*
 # DMI attributes but makes them unreadable, as a locked-down sysfs does.
 machine() {
   local name=${1%+unreadable}
+  unset FAKE_PROVIDERS_OVERRIDE
   rm -rf "$hw" "$root"
   mkdir -p "$hw/dmi" "$root/etc" "$root/home/.config/hypr"
   printf '%s\n' '-- User look and feel' >"$root/home/.config/hypr/looknfeel.lua"
@@ -252,8 +265,18 @@ machine() {
     t14s-21n1-not-qualcomm) dmi product_name 21N10000US; FAKE_PLATFORM=aarch64 ;;
     t14-gen4) dmi product_name 21F60000US ;;
     yoga-slim7x) dmi product_name 83ED; FAKE_PLATFORM=aarch64-qualcomm; FAKE_COMPATIBLE="lenovo,yoga-slim7x qcom,x1e80100" ;;
-    vivobook-s15) dmi sys_vendor ASUS; dmi product_name "Vivobook S 15 S5507QA"; FAKE_PLATFORM=aarch64-qualcomm ;;
-    vivobook-s15-not-qualcomm) dmi sys_vendor ASUS; dmi product_name "Vivobook S 15 S5507QA"; FAKE_PLATFORM=aarch64 ;;
+    # X Plus: DMI is S5507QA_S5507QA and the device tree is asus,vivobook-s15-x1p4.
+    vivobook-s15) dmi sys_vendor ASUS; dmi product_name "S5507QA_S5507QA"; FAKE_PLATFORM=aarch64-qualcomm; FAKE_COMPATIBLE="asus,vivobook-s15-x1p4 qcom,x1p42100" ;;
+    # The X Elite's product name contains S5507QA. A loose DMI match would select it.
+    vivobook-s15-elite) dmi sys_vendor ASUS; dmi product_name "S5507QAD"; FAKE_PLATFORM=aarch64-qualcomm; FAKE_COMPATIBLE="qcom,x1e80100" ;;
+    vivobook-s15-dmi-only) dmi sys_vendor ASUS; dmi product_name "S5507QA_S5507QA"; FAKE_PLATFORM=aarch64-qualcomm ;;
+    vivobook-s15-not-qualcomm) dmi sys_vendor ASUS; dmi product_name "S5507QA_S5507QA"; FAKE_PLATFORM=aarch64; FAKE_COMPATIBLE="asus,vivobook-s15-x1p4 qcom,x1p42100" ;;
+    vivobook-s15-no-firmware)
+      dmi sys_vendor ASUS; dmi product_name "S5507QA_S5507QA"; FAKE_PLATFORM=aarch64-qualcomm
+      FAKE_COMPATIBLE="asus,vivobook-s15-x1p4 qcom,x1p42100"
+      grep -v '^asus-vivobook-s15-firmware ' "$test_tmp/providers" >"$test_tmp/providers-no-firmware"
+      FAKE_PROVIDERS_OVERRIDE=$test_tmp/providers-no-firmware
+      ;;
     zenbook-a16) dmi sys_vendor ASUS; dmi product_name "Zenbook A16 UX3607OA"; FAKE_PLATFORM=aarch64-qualcomm ;;
     zenbook-a16-not-qualcomm) dmi sys_vendor ASUS; dmi product_name "Zenbook A16 UX3607OA"; FAKE_PLATFORM=aarch64 ;;
     omnibook-ultra-14) dmi sys_vendor HP; dmi product_name "HP OmniBook Ultra Laptop 14-kg0xxx"; FAKE_PLATFORM=aarch64-qualcomm; FAKE_COMPATIBLE="hp,omnibook-ultra-kg0xxx qcom,glymur" ;;
@@ -296,11 +319,12 @@ snapshot() {
 # errexit, and print its exit status and what it did: logged calls, then every
 # file it created or changed under the scratch root.
 run_leaf() {
-  local before status=0
+  local before status=0 providers
   : >"$calls"
   before=$(snapshot)
+  providers=${FAKE_PROVIDERS_OVERRIDE:-$test_tmp/providers}
   HOME="$root/home" OMARCHY_PATH="$ROOT" PATH="$stub_bin:$ROOT/bin:$PATH" STUB_BIN="$stub_bin" CALLS="$calls" \
-    FAKE_HW="$hw" FAKE_ROOT="$root" FAKE_PROVIDERS="$test_tmp/providers" \
+    FAKE_HW="$hw" FAKE_ROOT="$root" FAKE_PROVIDERS="$providers" \
     OMARCHY_QCOM_FIRMWARE_MANIFEST="$hw/qcom-firmware-manifest" \
     OMARCHY_DMI_PRODUCT_SKU="$hw/dmi/product_sku" \
     OMARCHY_SYNAPTIC_INPUT_DEVICES="$hw/input-devices" \
@@ -314,6 +338,7 @@ run_leaf() {
     OMARCHY_VIVOBOOK_UDEV_DIR="$root/etc/udev/rules.d" \
     OMARCHY_VIVOBOOK_SLEEP_DIR="$root/etc/systemd/sleep.conf.d" \
     OMARCHY_QUALCOMM_WIREPLUMBER_DIR="$root/etc/wireplumber/wireplumber.conf.d" \
+    OMARCHY_QUALCOMM_MODPROBE_DIR="$root/etc/modprobe.d" \
     OMARCHY_SOUNDWIRE_SYSFS="$root/sys/bus/platform/drivers/qcom-soundwire" \
     OMARCHY_NVIDIA_MODPROBE_CONFIG="$hw/nvidia.conf" \
     OMARCHY_PCI_DEVICES="$root/sys/bus/pci/devices" \
@@ -343,6 +368,7 @@ leaves=(
   hardware/asus/fix-asus-zenbook-14-ux3480qa-boot.sh
   hardware/asus/fix-asus-zenbook-14-ux3480qa-audio.sh
   hardware/asus/vivobook-s5507qa.sh
+  hardware/asus/fix-asus-vivobook-s15-xplus.sh
   hardware/qualcomm/disable-iris-v4l2.sh
   hardware/dell-xps13-ptl-speaker-firmware.sh
   hardware/fix-ath12k-board-data.sh
@@ -425,12 +451,20 @@ hardware/asus/fix-asus-zenbook-14-ux3480qa-audio.sh|zenbook-14-ux3480qa|0|pkg-ad
 hardware/asus/fix-asus-zenbook-14-ux3480qa-audio.sh|zenbook-14-ux3480qa+unreadable|0
 hardware/asus/fix-asus-zenbook-14-ux3480qa-audio.sh|zenbook-14-ux3480qa-not-qualcomm|0
 hardware/asus/fix-asus-zenbook-14-ux3480qa-audio.sh|zenbook-a16|0
-hardware/asus/vivobook-s5507qa.sh|vivobook-s15|0|wrote etc/udev/rules.d/90-vivobook-s15-soundwire-no-runtime-pm.rules|wrote etc/systemd/sleep.conf.d/50-vivobook-s2idle.conf
-hardware/asus/vivobook-s5507qa.sh|vivobook-s15+unreadable|0
+hardware/asus/vivobook-s5507qa.sh|vivobook-s15|0|wrote etc/wireplumber/wireplumber.conf.d/50-vivobook-s15-speaker-volume.conf|wrote etc/udev/rules.d/90-vivobook-s15-soundwire-no-runtime-pm.rules|wrote etc/systemd/sleep.conf.d/50-vivobook-s2idle.conf
+hardware/asus/vivobook-s5507qa.sh|vivobook-s15+unreadable|0|wrote etc/wireplumber/wireplumber.conf.d/50-vivobook-s15-speaker-volume.conf|wrote etc/udev/rules.d/90-vivobook-s15-soundwire-no-runtime-pm.rules|wrote etc/systemd/sleep.conf.d/50-vivobook-s2idle.conf
+hardware/asus/vivobook-s5507qa.sh|vivobook-s15-elite|0
+hardware/asus/vivobook-s5507qa.sh|vivobook-s15-dmi-only|0
 hardware/asus/vivobook-s5507qa.sh|vivobook-s15-not-qualcomm|0
 hardware/asus/vivobook-s5507qa.sh|yoga-slim7x|0
 hardware/asus/vivobook-s5507qa.sh|zenbook-14-ux3480qa|0
 hardware/asus/vivobook-s5507qa.sh|zenbook-a16|0
+hardware/asus/fix-asus-vivobook-s15-xplus.sh|vivobook-s15|0|pkg-add asus-vivobook-s15-firmware|pkg-add linux-firmware-qcom qcom-firmware-extract|wrote etc/wireplumber/wireplumber.conf.d/50-vivobook-s15-speaker-volume.conf|wrote etc/udev/rules.d/90-vivobook-s15-soundwire-no-runtime-pm.rules|wrote etc/systemd/sleep.conf.d/50-vivobook-s2idle.conf
+hardware/asus/fix-asus-vivobook-s15-xplus.sh|vivobook-s15-no-firmware|0|wrote etc/wireplumber/wireplumber.conf.d/50-vivobook-s15-speaker-volume.conf|wrote etc/udev/rules.d/90-vivobook-s15-soundwire-no-runtime-pm.rules|wrote etc/systemd/sleep.conf.d/50-vivobook-s2idle.conf
+hardware/asus/fix-asus-vivobook-s15-xplus.sh|vivobook-s15-elite|0
+hardware/asus/fix-asus-vivobook-s15-xplus.sh|vivobook-s15-dmi-only|0
+hardware/asus/fix-asus-vivobook-s15-xplus.sh|vivobook-s15-not-qualcomm|0
+hardware/asus/fix-asus-vivobook-s15-xplus.sh|yoga-slim7x|0
 hardware/qualcomm/disable-iris-v4l2.sh|vivobook-s15|0|wrote etc/wireplumber/wireplumber.conf.d/50-hide-qcom-iris-v4l2.conf
 hardware/qualcomm/disable-iris-v4l2.sh|vivobook-s15+unreadable|0|wrote etc/wireplumber/wireplumber.conf.d/50-hide-qcom-iris-v4l2.conf
 hardware/qualcomm/disable-iris-v4l2.sh|vivobook-s15-not-qualcomm|0
@@ -469,6 +503,27 @@ user/hardware/fix-nouveau-cursor.sh|nouveau-proprietary|0
 ROWS
 pass "hardware quirks apply on their own hardware and nowhere else"
 
+# The table above discards what the leaf prints. A channel without the
+# firmware package has to say so, and still apply the speaker fixes.
+machine vivobook-s15-no-firmware
+: >"$calls"
+xplus_out=$(
+  HOME="$root/home" OMARCHY_PATH="$ROOT" PATH="$stub_bin:$ROOT/bin:$PATH" CALLS="$calls" \
+    FAKE_PROVIDERS="$test_tmp/providers-no-firmware" FAKE_PKG_ADD_STATUS=0 \
+    OMARCHY_VIVOBOOK_UDEV_DIR="$root/etc/udev/rules.d" \
+    OMARCHY_VIVOBOOK_SLEEP_DIR="$root/etc/systemd/sleep.conf.d" \
+    OMARCHY_QUALCOMM_WIREPLUMBER_DIR="$root/etc/wireplumber/wireplumber.conf.d" \
+    bash -eE -c 'source "$1"' bash "$ROOT/install/hardware/asus/fix-asus-vivobook-s15-xplus.sh"
+)
+[[ $xplus_out == *'not in this package channel'* && $xplus_out == *'published to edge'* ]] ||
+  fail "a channel without the X Plus firmware package says how to get it" "$xplus_out"
+if grep -q 'pkg-add asus-vivobook-s15-firmware' "$calls"; then
+  fail "a channel without the X Plus firmware package does not install it"
+fi
+[[ -f $root/etc/udev/rules.d/90-vivobook-s15-soundwire-no-runtime-pm.rules ]] ||
+  fail "a missing firmware package still installs the SoundWire rule"
+pass "a missing X Plus firmware package warns and does not fail setup"
+
 # --- What the applied quirks leave behind ---
 
 machine surface-intel
@@ -499,33 +554,38 @@ pass "nouveau cursor setup is idempotent"
 # The command is what a person runs. The leaves above are what setup sources.
 vivobook_cmd() {
   HOME="$root/home" OMARCHY_PATH="$ROOT" PATH="$stub_bin:$ROOT/bin:$PATH" \
-    FAKE_HW="$hw" \
+    FAKE_HW="$hw" FAKE_PROVIDERS="${FAKE_PROVIDERS_OVERRIDE:-$test_tmp/providers}" \
+    FAKE_PKG_ADD_STATUS="${FAKE_PKG_ADD_STATUS:-0}" CALLS="$calls" \
     OMARCHY_VIVOBOOK_UDEV_DIR="$root/etc/udev/rules.d" \
     OMARCHY_VIVOBOOK_SLEEP_DIR="$root/etc/systemd/sleep.conf.d" \
     OMARCHY_QUALCOMM_WIREPLUMBER_DIR="$root/etc/wireplumber/wireplumber.conf.d" \
+    OMARCHY_QUALCOMM_MODPROBE_DIR="$root/etc/modprobe.d" \
     OMARCHY_SOUNDWIRE_SYSFS="$root/sys/bus/platform/drivers/qcom-soundwire" \
     bash "$ROOT/bin/omarchy-hw-vivobook-s5507qa" "$@"
 }
 
 rules_file=$root/etc/udev/rules.d/90-vivobook-s15-soundwire-no-runtime-pm.rules
 sleep_file=$root/etc/systemd/sleep.conf.d/50-vivobook-s2idle.conf
+volume_file=$root/etc/wireplumber/wireplumber.conf.d/50-vivobook-s15-speaker-volume.conf
 iris_file=$root/etc/wireplumber/wireplumber.conf.d/50-hide-qcom-iris-v4l2.conf
 iris_old=$root/etc/wireplumber/wireplumber.conf.d/50-disable-qcom-iris-v4l2.conf
 soundwire_control=$root/sys/bus/platform/drivers/qcom-soundwire/controller/power/control
+speaker_off=$'SoundWire runtime PM: not installed\nSuspend: kernel default\nSpeaker volume: unchanged\nIris decoder: not hidden from PipeWire'
+iris_unchecked=$'Iris firmware: not checked'
 
 machine plain
-[[ $(vivobook_cmd status) == $'Machine: not a Vivobook S 15 S5507QA\nSoundWire runtime PM: not installed\nSuspend: kernel default\nIris decoder: not hidden from PipeWire\nIris firmware: not a Qualcomm machine' ]] ||
+[[ $(vivobook_cmd status) == $'Machine: not a Vivobook S 15 S5507QA\n'"$speaker_off"$'\nIris firmware: not a Qualcomm machine' ]] ||
   fail "Vivobook status on other hardware names neither the laptop nor the fixes" "$(vivobook_cmd status)"
 vivobook_cmd install >/dev/null
-[[ ! -e $rules_file && ! -e $sleep_file && ! -e $iris_file ]] ||
+[[ ! -e $rules_file && ! -e $sleep_file && ! -e $volume_file && ! -e $iris_file ]] ||
   fail "Vivobook install writes nothing on other hardware"
 pass "Vivobook fixes stay off other hardware"
 
 machine yoga-slim7x
-[[ $(vivobook_cmd status) == $'Machine: Qualcomm, not a Vivobook S 15 S5507QA\nSoundWire runtime PM: not installed\nSuspend: kernel default\nIris decoder: not hidden from PipeWire\nIris firmware: not checked' ]] ||
+[[ $(vivobook_cmd status) == $'Machine: Qualcomm, not a Vivobook S 15 S5507QA\n'"$speaker_off"$'\n'"$iris_unchecked" ]] ||
   fail "Vivobook status on another Qualcomm machine keeps the speaker and sleep fixes off" "$(vivobook_cmd status)"
 vivobook_cmd install >/dev/null
-[[ ! -e $rules_file && ! -e $sleep_file && -f $iris_file ]] ||
+[[ ! -e $rules_file && ! -e $sleep_file && ! -e $volume_file && -f $iris_file ]] ||
   fail "another Qualcomm machine gets only the iris WirePlumber rule"
 vivobook_cmd uninstall >/dev/null
 [[ ! -e $iris_file ]] || fail "uninstall removes the iris WirePlumber rule from another Qualcomm machine"
@@ -546,15 +606,21 @@ mkdir -p "$(dirname "$decoy_sleep")" "$(dirname "$decoy_rule")"
 printf 'keep\n' >"$decoy_sleep"
 printf 'keep\n' >"$decoy_rule"
 
-[[ $(vivobook_cmd status) == $'Machine: ASUS Vivobook S 15 S5507QA\nSoundWire runtime PM: not installed\nSuspend: kernel default\nIris decoder: not hidden from PipeWire\nIris firmware: not checked' ]] ||
+[[ $(vivobook_cmd status) == $'Machine: ASUS Vivobook S 15 S5507QA (Snapdragon X Plus)\n'"$speaker_off"$'\n'"$iris_unchecked" ]] ||
   fail "Vivobook status before install says the fixes are absent" "$(vivobook_cmd status)"
 vivobook_cmd install >/dev/null
 [[ $(<"$rules_file") == 'ACTION=="add|bind", SUBSYSTEM=="platform", DRIVER=="qcom-soundwire", ATTR{power/control}="on"' ]] ||
   fail "Vivobook SoundWire rule keeps the controllers powered" "$(<"$rules_file")"
 [[ $(<"$sleep_file") == $'[Sleep]\nMemorySleepMode=s2idle' ]] ||
   fail "Vivobook suspends to idle" "$(<"$sleep_file")"
-[[ $(stat -c %a "$rules_file") == 644 && $(stat -c %a "$sleep_file") == 644 ]] ||
-  fail "Vivobook speaker and sleep files are not writable by other users"
+[[ $(stat -c %a "$rules_file") == 644 && $(stat -c %a "$sleep_file") == 644 && $(stat -c %a "$volume_file") == 644 ]] ||
+  fail "Vivobook speaker, sleep, and volume files are not writable by other users"
+cmp -s "$ROOT/install/hardware/asus/50-vivobook-s15-speaker-volume.conf" "$volume_file" ||
+  fail "Vivobook speaker volume cap is the shipped config"
+grep -Fq 'channelmix.max-volume = 0.4' "$volume_file" ||
+  fail "Vivobook speaker volume stays under full scale"
+grep -Fq 'HiFi__Speaker__sink' "$volume_file" ||
+  fail "Vivobook speaker volume cap matches the speaker sink"
 cmp -s "$ROOT/install/hardware/qualcomm/50-hide-qcom-iris-v4l2.conf" "$iris_file" ||
   fail "Vivobook WirePlumber rule is the shipped iris config"
 grep -Fq 'device.disabled = true' "$iris_file" ||
@@ -576,17 +642,17 @@ printf 'stale disable rule\n' >"$iris_old"
 vivobook_cmd install >/dev/null
 [[ ! -e $iris_old && -f $iris_file ]] ||
   fail "install drops the old WirePlumber filename and keeps the hide rule"
-[[ $(vivobook_cmd status) == $'Machine: ASUS Vivobook S 15 S5507QA\nSoundWire runtime PM: installed\nSuspend: s2idle\nIris decoder: hidden from PipeWire cameras\nIris firmware: not checked' ]] ||
+[[ $(vivobook_cmd status) == $'Machine: ASUS Vivobook S 15 S5507QA (Snapdragon X Plus)\nSoundWire runtime PM: installed\nSuspend: s2idle\nSpeaker volume: capped\nIris decoder: hidden from PipeWire cameras\n'"$iris_unchecked" ]] ||
   fail "Vivobook status reports the installed fixes" "$(vivobook_cmd status)"
 
 vivobook_cmd uninstall >/dev/null
-[[ ! -e $rules_file && ! -e $sleep_file && ! -e $iris_file ]] ||
-  fail "uninstall removes the Vivobook speaker, sleep, and iris files"
+[[ ! -e $rules_file && ! -e $sleep_file && ! -e $volume_file && ! -e $iris_file ]] ||
+  fail "uninstall removes the Vivobook speaker, volume, sleep, and iris files"
 [[ $(<"$soundwire_control") == auto ]] ||
   fail "uninstall returns SoundWire controllers to runtime PM" "$(<"$soundwire_control")"
 [[ $(<"$decoy_sleep") == keep && $(<"$decoy_rule") == keep ]] ||
   fail "uninstall leaves other sleep and udev files in place"
-[[ $(vivobook_cmd status) == $'Machine: ASUS Vivobook S 15 S5507QA\nSoundWire runtime PM: not installed\nSuspend: kernel default\nIris decoder: not hidden from PipeWire\nIris firmware: not checked' ]] ||
+[[ $(vivobook_cmd status) == $'Machine: ASUS Vivobook S 15 S5507QA (Snapdragon X Plus)\n'"$speaker_off"$'\n'"$iris_unchecked" ]] ||
   fail "Vivobook status after uninstall says the fixes are gone" "$(vivobook_cmd status)"
 pass "Vivobook S15 fixes install, report their state, and uninstall"
 
@@ -617,6 +683,19 @@ printf '%s\n' \
   fail "iris firmware status is ok when the kernel log has no iris error"
 [[ $(snapshot) == "$before" ]] || fail "iris firmware status does not write anything"
 pass "iris firmware status warns only for the Qualcomm firmware error -22"
+
+machine vivobook-s15-elite
+[[ $(vivobook_cmd status) == $'Machine: Qualcomm, not a Vivobook S 15 S5507QA\n'"$speaker_off"$'\n'"$iris_unchecked" ]] ||
+  fail "the X Elite S5507QAD is not reported as the X Plus" "$(vivobook_cmd status)"
+vivobook_cmd install >/dev/null
+[[ ! -e $rules_file && ! -e $sleep_file && ! -e $volume_file && -f $iris_file ]] ||
+  fail "the X Elite S5507QAD does not get the X Plus speaker fixes"
+pass "the X Elite S5507QAD is not treated as the X Plus"
+
+machine vivobook-s15-dmi-only
+[[ $(vivobook_cmd status) == $'Machine: Qualcomm, not a Vivobook S 15 S5507QA\n'"$speaker_off"$'\n'"$iris_unchecked" ]] ||
+  fail "DMI product S5507QA_S5507QA without the X Plus device tree is not the X Plus" "$(vivobook_cmd status)"
+pass "a loose S5507QA DMI match does not select the X Plus"
 
 if bash "$ROOT/bin/omarchy-hw-vivobook-s5507qa" nonsense >/dev/null 2>&1; then
   fail "the Vivobook command rejects an unknown action"
