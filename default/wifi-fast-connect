@@ -1,0 +1,44 @@
+#!/bin/bash
+
+# NetworkManager waits for a scan before it auto-activates a known network.
+# On Snapdragon X with ath12k the device is ready immediately, that scan takes
+# about 16 seconds, and the connect itself takes about half a second. A rescan
+# plus an explicit connect skips the wait. This runs at boot and, from the
+# resume hook, after suspend.
+#
+# Undo:
+#   sudo systemctl disable --now wifi-fast-connect.service
+#   sudo rm -f /usr/local/bin/wifi-fast-connect \
+#     /usr/lib/systemd/system-sleep/90-wifi-fast-resume \
+#     /etc/systemd/system/wifi-fast-connect.service
+#   sudo systemctl daemon-reload
+
+# Failures stay quiet: a missing radio or a refused connect must not surface
+# as a failed boot service or a failed resume hook.
+main() {
+  local dev state attempt
+
+  dev=$(nmcli -t -f DEVICE,TYPE device 2>/dev/null | awk -F: '$2 == "wifi" { print $1; exit }') || true
+  [[ -n $dev ]] || return 0
+
+  state=""
+  for (( attempt = 0; attempt < 50; attempt++ )); do
+    state=$(nmcli -t -f DEVICE,STATE device 2>/dev/null | awk -F: -v dev="$dev" '$1 == dev { print $2; exit }') || true
+    if [[ $state == "connected" || $state == "disconnected" ]]; then
+      break
+    fi
+    sleep 0.3
+  done
+
+  if [[ $state == "connected" ]]; then
+    return 0
+  fi
+
+  nmcli device wifi rescan ifname "$dev" >/dev/null 2>&1 || true
+  sleep 1
+  nmcli device connect "$dev" >/dev/null 2>&1 || true
+  logger -t wifi-fast-resume "requested connect on $dev" || true
+}
+
+main
+exit 0

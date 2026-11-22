@@ -271,6 +271,9 @@ machine() {
     vivobook-s15-elite) dmi sys_vendor ASUS; dmi product_name "S5507QAD"; FAKE_PLATFORM=aarch64-qualcomm; FAKE_COMPATIBLE="qcom,x1e80100" ;;
     vivobook-s15-dmi-only) dmi sys_vendor ASUS; dmi product_name "S5507QA_S5507QA"; FAKE_PLATFORM=aarch64-qualcomm ;;
     vivobook-s15-not-qualcomm) dmi sys_vendor ASUS; dmi product_name "S5507QA_S5507QA"; FAKE_PLATFORM=aarch64; FAKE_COMPATIBLE="asus,vivobook-s15-x1p4 qcom,x1p42100" ;;
+    # Not x1e80100 or x1p42100. ath12k being loaded is what qualifies it.
+    qualcomm-ath12k) FAKE_PLATFORM=aarch64-qualcomm; FAKE_COMPATIBLE="lenovo,thinkpad-t14s qcom,x1e78100"; FAKE_LSMOD=$'ath12k_pci 16384 0\nath12k 524288 1 ath12k_pci' ;;
+    x86-ath12k) FAKE_PLATFORM=x86; FAKE_LSMOD=$'ath12k_pci 16384 0\nath12k 524288 1 ath12k_pci' ;;
     vivobook-s15-no-firmware)
       dmi sys_vendor ASUS; dmi product_name "S5507QA_S5507QA"; FAKE_PLATFORM=aarch64-qualcomm
       FAKE_COMPATIBLE="asus,vivobook-s15-x1p4 qcom,x1p42100"
@@ -343,6 +346,11 @@ run_leaf() {
     OMARCHY_NVIDIA_MODPROBE_CONFIG="$hw/nvidia.conf" \
     OMARCHY_PCI_DEVICES="$root/sys/bus/pci/devices" \
     OMARCHY_ATH12K_BOARD_STATE="$root/var/lib/ath12k-board-fallback/installed" \
+    OMARCHY_WIFI_FAST_BIN_DIR="$root/usr/local/bin" \
+    OMARCHY_WIFI_FAST_SLEEP_DIR="$root/usr/lib/systemd/system-sleep" \
+    OMARCHY_WIFI_FAST_UNIT_DIR="$root/etc/systemd/system" \
+    OMARCHY_SYS_MODULE="$root/sys/module" \
+    OMARCHY_PCI_DRIVERS="$root/sys/bus/pci/drivers" \
     bash -eE -c 'source "$1"' bash "$ROOT/install/$1" </dev/null >/dev/null 2>&1 || status=$?
   {
     printf '%s\n' "$status"
@@ -369,6 +377,7 @@ leaves=(
   hardware/asus/fix-asus-zenbook-14-ux3480qa-audio.sh
   hardware/asus/vivobook-s5507qa.sh
   hardware/asus/fix-asus-vivobook-s15-xplus.sh
+  hardware/qualcomm/wifi-fast-connect.sh
   hardware/qualcomm/disable-iris-v4l2.sh
   hardware/dell-xps13-ptl-speaker-firmware.sh
   hardware/fix-ath12k-board-data.sh
@@ -465,6 +474,14 @@ hardware/asus/fix-asus-vivobook-s15-xplus.sh|vivobook-s15-elite|0
 hardware/asus/fix-asus-vivobook-s15-xplus.sh|vivobook-s15-dmi-only|0
 hardware/asus/fix-asus-vivobook-s15-xplus.sh|vivobook-s15-not-qualcomm|0
 hardware/asus/fix-asus-vivobook-s15-xplus.sh|yoga-slim7x|0
+hardware/qualcomm/wifi-fast-connect.sh|vivobook-s15|0|wrote usr/lib/systemd/system-sleep/90-wifi-fast-resume|wrote etc/systemd/system/wifi-fast-connect.service|wrote usr/local/bin/wifi-fast-connect
+hardware/qualcomm/wifi-fast-connect.sh|yoga-slim7x|0|wrote usr/lib/systemd/system-sleep/90-wifi-fast-resume|wrote etc/systemd/system/wifi-fast-connect.service|wrote usr/local/bin/wifi-fast-connect
+hardware/qualcomm/wifi-fast-connect.sh|vivobook-s15-elite|0|wrote usr/lib/systemd/system-sleep/90-wifi-fast-resume|wrote etc/systemd/system/wifi-fast-connect.service|wrote usr/local/bin/wifi-fast-connect
+hardware/qualcomm/wifi-fast-connect.sh|qualcomm-ath12k|0|wrote usr/lib/systemd/system-sleep/90-wifi-fast-resume|wrote etc/systemd/system/wifi-fast-connect.service|wrote usr/local/bin/wifi-fast-connect
+hardware/qualcomm/wifi-fast-connect.sh|x86-ath12k|0
+hardware/qualcomm/wifi-fast-connect.sh|vivobook-s15-not-qualcomm|0
+hardware/qualcomm/wifi-fast-connect.sh|vivobook-s15-dmi-only|0
+hardware/qualcomm/wifi-fast-connect.sh|snapdragon-unpackaged|0
 hardware/qualcomm/disable-iris-v4l2.sh|vivobook-s15|0|wrote etc/wireplumber/wireplumber.conf.d/50-hide-qcom-iris-v4l2.conf
 hardware/qualcomm/disable-iris-v4l2.sh|vivobook-s15+unreadable|0|wrote etc/wireplumber/wireplumber.conf.d/50-hide-qcom-iris-v4l2.conf
 hardware/qualcomm/disable-iris-v4l2.sh|vivobook-s15-not-qualcomm|0
@@ -701,3 +718,165 @@ if bash "$ROOT/bin/omarchy-hw-vivobook-s5507qa" nonsense >/dev/null 2>&1; then
   fail "the Vivobook command rejects an unknown action"
 fi
 pass "the Vivobook command rejects an unknown action"
+
+# --- Fast Wi-Fi reconnect ---
+
+wifi_fast_script=$root/usr/local/bin/wifi-fast-connect
+wifi_fast_hook=$root/usr/lib/systemd/system-sleep/90-wifi-fast-resume
+wifi_fast_unit=$root/etc/systemd/system/wifi-fast-connect.service
+
+wifi_fast_applies() {
+  PATH="$stub_bin:$ROOT/bin:$PATH" \
+    OMARCHY_SYS_MODULE="$root/sys/module" \
+    OMARCHY_PCI_DRIVERS="$root/sys/bus/pci/drivers" \
+    bash "$ROOT/install/hardware/qualcomm/wifi-fast-connect.sh" applies
+}
+
+wifi_fast_uninstall() {
+  OMARCHY_PATH="$ROOT" PATH="$stub_bin:$ROOT/bin:$PATH" \
+    OMARCHY_WIFI_FAST_BIN_DIR="$root/usr/local/bin" \
+    OMARCHY_WIFI_FAST_SLEEP_DIR="$root/usr/lib/systemd/system-sleep" \
+    OMARCHY_WIFI_FAST_UNIT_DIR="$root/etc/systemd/system" \
+    OMARCHY_SYS_MODULE="$root/sys/module" \
+    OMARCHY_PCI_DRIVERS="$root/sys/bus/pci/drivers" \
+    bash "$ROOT/install/hardware/qualcomm/wifi-fast-connect.sh" uninstall
+}
+
+machine plain
+if wifi_fast_applies; then
+  fail "fast Wi-Fi reconnect applies on a machine that is not Snapdragon X or ath12k"
+fi
+machine x86-ath12k
+if wifi_fast_applies; then
+  fail "fast Wi-Fi reconnect applies on x86, including when ath12k is loaded"
+fi
+machine vivobook-s15-dmi-only
+if wifi_fast_applies; then
+  fail "fast Wi-Fi reconnect applies on a Qualcomm machine with neither Snapdragon X nor ath12k"
+fi
+machine vivobook-s15
+wifi_fast_applies || fail "fast Wi-Fi reconnect applies on the Vivobook X Plus"
+machine qualcomm-ath12k
+wifi_fast_applies || fail "fast Wi-Fi reconnect applies when ath12k is loaded on Qualcomm"
+
+machine vivobook-s15
+run_leaf hardware/qualcomm/wifi-fast-connect.sh >/dev/null
+[[ $(stat -c %a "$wifi_fast_script") == 755 ]] || fail "wifi-fast-connect is installed executable"
+[[ $(stat -c %a "$wifi_fast_hook") == 755 ]] || fail "the resume hook is installed executable"
+[[ $(stat -c %a "$wifi_fast_unit") == 644 ]] || fail "wifi-fast-connect.service is installed as configuration"
+cmp -s "$ROOT/default/wifi-fast-connect" "$wifi_fast_script" || fail "the installed reconnect script matches the shipped one"
+cmp -s "$ROOT/default/systemd/system-sleep/90-wifi-fast-resume" "$wifi_fast_hook" || fail "the installed resume hook matches the shipped one"
+cmp -s "$ROOT/default/systemd/system/wifi-fast-connect.service" "$wifi_fast_unit" || fail "the installed service matches the shipped one"
+[[ $(run_leaf hardware/qualcomm/wifi-fast-connect.sh) == 0 ]] || fail "installing the fast Wi-Fi reconnect again changes a file"
+wifi_fast_uninstall
+[[ ! -e $wifi_fast_script && ! -e $wifi_fast_hook && ! -e $wifi_fast_unit ]] || fail "uninstall removes the reconnect script, resume hook, and service"
+wifi_fast_uninstall
+pass "fast Wi-Fi reconnect installs on Snapdragon X, stays off x86, and uninstalls cleanly"
+
+if grep -q '^Before=' "$ROOT/default/systemd/system/wifi-fast-connect.service"; then
+  fail "wifi-fast-connect.service orders itself before another unit, so it can delay boot"
+fi
+[[ -x $ROOT/default/systemd/system-sleep/90-wifi-fast-resume ]] ||
+  fail "the resume hook is executable in the checkout"
+[[ -x $ROOT/default/wifi-fast-connect ]] ||
+  fail "the reconnect script is executable in the checkout"
+pass "the fast Wi-Fi reconnect service does not order itself ahead of boot"
+
+# The reconnect script decides from nmcli. sleep, logger, and nmcli are stubs
+# so the 0.3s waits do not run and nothing touches a real radio.
+wifi_bin=$test_tmp/wifi-bin
+nmcli_log=$test_tmp/nmcli.log
+sleep_log=$test_tmp/sleep.log
+logger_log=$test_tmp/logger.log
+devices_file=$test_tmp/nmcli-devices
+states_file=$test_tmp/nmcli-states
+state_n=$test_tmp/nmcli-state-n
+mkdir -p "$wifi_bin"
+
+cat >"$wifi_bin/nmcli" <<'SH'
+#!/bin/bash
+printf '%s\n' "$*" >>"$NMCLI_LOG"
+if [[ $1 == "-t" && $3 == "DEVICE,TYPE" ]]; then
+  printf '%s\n' "$(<"$NMCLI_DEVICES")"
+  exit 0
+fi
+if [[ $1 == "-t" && $3 == "DEVICE,STATE" ]]; then
+  n=$(<"$NMCLI_STATE_N")
+  printf '%s\n' "$((n + 1))" >"$NMCLI_STATE_N"
+  mapfile -t states <"$NMCLI_STATES"
+  if (( ${#states[@]} == 0 )); then
+    exit 0
+  fi
+  idx=$n
+  if (( idx >= ${#states[@]} )); then
+    idx=$((${#states[@]} - 1))
+  fi
+  printf '%s\n' "${states[$idx]}"
+  exit 0
+fi
+exit 0
+SH
+
+cat >"$wifi_bin/sleep" <<'SH'
+#!/bin/bash
+printf '%s\n' "$*" >>"$SLEEP_LOG"
+SH
+
+cat >"$wifi_bin/logger" <<'SH'
+#!/bin/bash
+printf '%s\n' "$*" >>"$LOGGER_LOG"
+SH
+
+ln -s "$(command -v awk)" "$wifi_bin/awk"
+chmod +x "$wifi_bin/nmcli" "$wifi_bin/sleep" "$wifi_bin/logger"
+
+run_wifi() {
+  : >"$nmcli_log"
+  : >"$sleep_log"
+  : >"$logger_log"
+  printf '0\n' >"$state_n"
+  PATH="$wifi_bin" \
+    NMCLI_LOG="$nmcli_log" SLEEP_LOG="$sleep_log" LOGGER_LOG="$logger_log" \
+    NMCLI_DEVICES="$devices_file" NMCLI_STATES="$states_file" NMCLI_STATE_N="$state_n" \
+    "$ROOT/default/wifi-fast-connect"
+}
+
+printf '%s\n' 'wlP4p1s0:wifi' >"$devices_file"
+printf '%s\n' 'wlP4p1s0:connected' >"$states_file"
+run_wifi
+[[ $(<"$nmcli_log") == $'-t -f DEVICE,TYPE device\n-t -f DEVICE,STATE device' ]] ||
+  fail "an already connected radio is left alone" "$(<"$nmcli_log")"
+[[ ! -s $sleep_log && ! -s $logger_log ]] ||
+  fail "an already connected radio does not rescan or log a connect"
+pass "fast Wi-Fi reconnect leaves an already connected radio alone"
+
+printf '%s\n' 'wlP4p1s0:disconnected' >"$states_file"
+run_wifi
+[[ $(<"$nmcli_log") == $'-t -f DEVICE,TYPE device\n-t -f DEVICE,STATE device\ndevice wifi rescan ifname wlP4p1s0\ndevice connect wlP4p1s0' ]] ||
+  fail "a disconnected radio is rescanned and then connected" "$(<"$nmcli_log")"
+[[ $(<"$sleep_log") == 1 ]] || fail "the connect waits one second after the rescan" "$(<"$sleep_log")"
+[[ $(<"$logger_log") == "-t wifi-fast-resume requested connect on wlP4p1s0" ]] ||
+  fail "the connect is logged for the radio it requested" "$(<"$logger_log")"
+pass "fast Wi-Fi reconnect rescans and connects a disconnected radio"
+
+printf '%s\n' 'wlP4p1s0:unavailable' 'wlP4p1s0:unavailable' 'wlP4p1s0:disconnected' >"$states_file"
+run_wifi
+[[ $(<"$sleep_log") == $'0.3\n0.3\n1' ]] ||
+  fail "the reconnect waits for the radio to settle, then one second" "$(<"$sleep_log")"
+pass "fast Wi-Fi reconnect waits until the radio is disconnected or connected"
+
+printf '%s\n' 'lo:loopback' >"$devices_file"
+run_wifi
+[[ $(<"$nmcli_log") == "-t -f DEVICE,TYPE device" ]] ||
+  fail "a machine with no Wi-Fi device stops after listing devices" "$(<"$nmcli_log")"
+[[ ! -s $logger_log ]] || fail "a machine with no Wi-Fi device logs a connect"
+pass "fast Wi-Fi reconnect does nothing when there is no Wi-Fi device"
+
+rm -f "$wifi_bin/nmcli"
+err=$test_tmp/wifi-missing-nmcli.err
+if ! PATH="$wifi_bin" "$ROOT/default/wifi-fast-connect" >"$test_tmp/wifi-missing-nmcli.out" 2>"$err"; then
+  fail "fast Wi-Fi reconnect exits 0 when nmcli is missing"
+fi
+[[ ! -s $err && ! -s $test_tmp/wifi-missing-nmcli.out ]] ||
+  fail "a missing nmcli stays quiet" "out=$(<"$test_tmp/wifi-missing-nmcli.out") err=$(<"$err")"
+pass "fast Wi-Fi reconnect exits quietly when nmcli is missing"
