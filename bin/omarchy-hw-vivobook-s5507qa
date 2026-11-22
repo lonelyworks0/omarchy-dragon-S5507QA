@@ -1,11 +1,13 @@
 #!/bin/bash
 
-# omarchy:summary=Install or remove Vivobook S15 speaker and suspend fixes, hide the iris decoder from PipeWire, and report iris firmware
+# omarchy:summary=Install or remove Vivobook S15 X Plus speaker, volume, and suspend fixes, hide the iris decoder, and report iris firmware
 # omarchy:args=[status|install|uninstall]
 # omarchy:examples=omarchy hw vivobook s5507qa | omarchy hw vivobook s5507qa install | omarchy hw vivobook s5507qa uninstall
 
-# ASUS Vivobook S 15 S5507QA keeps its SoundWire speaker amps out of runtime
-# suspend and suspends to idle. Every Qualcomm machine also gets the
+# ASUS Vivobook S 15 S5507QA (Snapdragon X Plus) is the device tree
+# asus,vivobook-s15-x1p4. S5507QAD is the X Elite and is not this machine.
+# The X Plus keeps its SoundWire speaker amps out of runtime suspend, caps
+# speaker volume, and suspends to idle. Every Qualcomm machine also gets the
 # WirePlumber rule that hides the iris decoder from PipeWire's camera list.
 # That rule does not disable hardware decoding. status is the default and
 # is read-only, including the iris firmware check. install and uninstall
@@ -16,8 +18,10 @@ set -euo pipefail
 rules_dir=${OMARCHY_VIVOBOOK_UDEV_DIR:-/etc/udev/rules.d}
 sleep_dir=${OMARCHY_VIVOBOOK_SLEEP_DIR:-/etc/systemd/sleep.conf.d}
 iris_dir=${OMARCHY_QUALCOMM_WIREPLUMBER_DIR:-/etc/wireplumber/wireplumber.conf.d}
+volume_dir=${OMARCHY_VIVOBOOK_WIREPLUMBER_DIR:-$iris_dir}
 rules_file=$rules_dir/90-vivobook-s15-soundwire-no-runtime-pm.rules
 sleep_file=$sleep_dir/50-vivobook-s2idle.conf
+volume_file=$volume_dir/50-vivobook-s15-speaker-volume.conf
 iris_file=$iris_dir/50-hide-qcom-iris-v4l2.conf
 iris_file_retired=$iris_dir/50-disable-qcom-iris-v4l2.conf
 
@@ -27,7 +31,7 @@ Usage: omarchy-hw-vivobook-s5507qa [status|install|uninstall]
 
 status     Show whether these fixes are installed, and whether iris firmware failed
 install    Install the fixes this machine qualifies for
-uninstall  Remove the speaker, suspend, and PipeWire iris-hide fixes
+uninstall  Remove the speaker, volume, suspend, and PipeWire iris-hide fixes
 EOF
 }
 
@@ -51,7 +55,7 @@ esac
 
 # Fixture directories mean a test. A real install and uninstall write /etc.
 under_test=0
-if [[ -n ${OMARCHY_VIVOBOOK_UDEV_DIR:-} || -n ${OMARCHY_VIVOBOOK_SLEEP_DIR:-} || -n ${OMARCHY_QUALCOMM_WIREPLUMBER_DIR:-} || -n ${OMARCHY_SOUNDWIRE_SYSFS:-} ]]; then
+if [[ -n ${OMARCHY_VIVOBOOK_UDEV_DIR:-} || -n ${OMARCHY_VIVOBOOK_SLEEP_DIR:-} || -n ${OMARCHY_VIVOBOOK_WIREPLUMBER_DIR:-} || -n ${OMARCHY_QUALCOMM_WIREPLUMBER_DIR:-} || -n ${OMARCHY_SOUNDWIRE_SYSFS:-} ]]; then
   under_test=1
 fi
 
@@ -138,8 +142,8 @@ iris_firmware_status() {
 }
 
 status() {
-  if omarchy-hw-aarch64-qualcomm && omarchy-hw-match "S5507QA"; then
-    echo "Machine: ASUS Vivobook S 15 S5507QA"
+  if omarchy-hw-aarch64-qualcomm && omarchy-hw-match-device-tree asus,vivobook-s15-x1p4; then
+    echo "Machine: ASUS Vivobook S 15 S5507QA (Snapdragon X Plus)"
   elif omarchy-hw-aarch64-qualcomm; then
     echo "Machine: Qualcomm, not a Vivobook S 15 S5507QA"
   else
@@ -158,6 +162,12 @@ status() {
     echo "Suspend: kernel default"
   fi
 
+  if [[ -f $volume_file ]]; then
+    echo "Speaker volume: capped"
+  else
+    echo "Speaker volume: unchanged"
+  fi
+
   if [[ -f $iris_file || -f $iris_file_retired ]]; then
     echo "Iris decoder: hidden from PipeWire cameras"
   else
@@ -168,7 +178,8 @@ status() {
 }
 
 install_fixes() {
-  bash "$OMARCHY_PATH/install/hardware/asus/vivobook-s5507qa.sh" install
+  # Firmware when this channel has it, then the speaker, volume, and sleep files.
+  bash -euo pipefail -c 'source "$OMARCHY_PATH/install/hardware/asus/fix-asus-vivobook-s15-xplus.sh"'
   bash "$OMARCHY_PATH/install/hardware/qualcomm/disable-iris-v4l2.sh" install
   if omarchy-hw-aarch64-qualcomm; then
     restart_user_wireplumber
@@ -185,7 +196,7 @@ uninstall_fixes() {
   if (( had_iris == 1 )); then
     restart_user_wireplumber
   fi
-  echo "Removed the Vivobook S15 speaker and suspend fixes and the Qualcomm rule that hides the iris decoder from PipeWire."
+  echo "Removed the Vivobook S15 speaker, volume, and suspend fixes and the Qualcomm rule that hides the iris decoder from PipeWire."
   echo "Install them again with: omarchy hw vivobook s5507qa install"
 }
 

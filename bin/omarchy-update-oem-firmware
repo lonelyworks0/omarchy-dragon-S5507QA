@@ -11,9 +11,12 @@
 # the machine's SoC does not fail the update.
 #
 # The table is one row per laptop. Another Snapdragon X model is a new row:
-# its DMI match, the ASUS support API ids from that model's download page,
-# the archive member that holds the iris firmware, where Linux looks for it,
-# and the SoC hardware id the image must be signed for.
+# its device-tree compatible string, the ASUS support API ids from that
+# model's download page, the archive member that holds the iris firmware,
+# where Linux looks for it, and the SoC hardware id the image must be signed
+# for. The match is that compatible string, whole. A DMI substring such as
+# S5507QA also matches the X Elite S5507QAD. The dmi column is only the cpu
+# value ASUS's API expects.
 #
 # ASUS lists these ARM laptops under Windows 11 64-bit (osid 52). The
 # Qualcomm driver package is the "Driver Package" / SOCPackage entry.
@@ -26,9 +29,9 @@ API_TIMEOUT=20
 DOWNLOAD_TIMEOUT=180
 DOWNLOAD_BASE=${OMARCHY_ASUS_DOWNLOAD_BASE:-https://dlcdnets.asus.com}
 
-# id|dmi|model|pdid|pdhashedid|osid|category|title|name contains|member|dest under firmware root|soc|install names
+# id|dmi|model|pdid|pdhashedid|osid|category|title|name contains|member|dest under firmware root|soc|install names|compatible
 OEM_FIRMWARE_MODELS=(
-  'vivobook-s5507qa|S5507QA|s5507qa|25813|rypr2vnwm9cjqn8t|52|Driver Package|Qualcomm Board Support Package|SOCPackage|Driver/QualcommBSP/GFX/qcdx8380/qcvss8380_pa.mbn|updates/qcom/x1p42100/ASUSTeK/vivobook-s15|0xA016|qcvss8380.mbn,qcvss8380_pa.mbn'
+  'vivobook-s5507qa|S5507QA|s5507qa|25813|rypr2vnwm9cjqn8t|52|Driver Package|Qualcomm Board Support Package|SOCPackage|Driver/QualcommBSP/GFX/qcdx8380/qcvss8380_pa.mbn|updates/qcom/x1p42100/ASUSTeK/vivobook-s15|0xA016|qcvss8380.mbn,qcvss8380_pa.mbn|asus,vivobook-s15-x1p4'
 )
 
 usage() {
@@ -217,11 +220,12 @@ version_is_newer() {
 }
 
 load_model() {
-  local row
+  local row compatible
   id="" dmi="" model="" pdid="" pdhash="" osid="" category="" title="" name_has="" member="" dest_rel="" soc="" names=""
   for row in "${OEM_FIRMWARE_MODELS[@]}"; do
-    IFS='|' read -r id dmi model pdid pdhash osid category title name_has member dest_rel soc names <<<"$row"
-    if omarchy-hw-match "$dmi"; then
+    compatible=""
+    IFS='|' read -r id dmi model pdid pdhash osid category title name_has member dest_rel soc names compatible <<<"$row"
+    if [[ -n $compatible ]] && omarchy-hw-match-device-tree "$compatible"; then
       return 0
     fi
   done
