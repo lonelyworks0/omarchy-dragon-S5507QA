@@ -431,12 +431,12 @@ hardware/asus/vivobook-s5507qa.sh|vivobook-s15-not-qualcomm|0
 hardware/asus/vivobook-s5507qa.sh|yoga-slim7x|0
 hardware/asus/vivobook-s5507qa.sh|zenbook-14-ux3480qa|0
 hardware/asus/vivobook-s5507qa.sh|zenbook-a16|0
-hardware/qualcomm/disable-iris-v4l2.sh|vivobook-s15|0|wrote etc/wireplumber/wireplumber.conf.d/50-disable-qcom-iris-v4l2.conf
-hardware/qualcomm/disable-iris-v4l2.sh|vivobook-s15+unreadable|0|wrote etc/wireplumber/wireplumber.conf.d/50-disable-qcom-iris-v4l2.conf
+hardware/qualcomm/disable-iris-v4l2.sh|vivobook-s15|0|wrote etc/wireplumber/wireplumber.conf.d/50-hide-qcom-iris-v4l2.conf
+hardware/qualcomm/disable-iris-v4l2.sh|vivobook-s15+unreadable|0|wrote etc/wireplumber/wireplumber.conf.d/50-hide-qcom-iris-v4l2.conf
 hardware/qualcomm/disable-iris-v4l2.sh|vivobook-s15-not-qualcomm|0
-hardware/qualcomm/disable-iris-v4l2.sh|yoga-slim7x|0|wrote etc/wireplumber/wireplumber.conf.d/50-disable-qcom-iris-v4l2.conf
-hardware/qualcomm/disable-iris-v4l2.sh|zenbook-14-ux3480qa|0|wrote etc/wireplumber/wireplumber.conf.d/50-disable-qcom-iris-v4l2.conf
-hardware/qualcomm/disable-iris-v4l2.sh|zenbook-a16|0|wrote etc/wireplumber/wireplumber.conf.d/50-disable-qcom-iris-v4l2.conf
+hardware/qualcomm/disable-iris-v4l2.sh|yoga-slim7x|0|wrote etc/wireplumber/wireplumber.conf.d/50-hide-qcom-iris-v4l2.conf
+hardware/qualcomm/disable-iris-v4l2.sh|zenbook-14-ux3480qa|0|wrote etc/wireplumber/wireplumber.conf.d/50-hide-qcom-iris-v4l2.conf
+hardware/qualcomm/disable-iris-v4l2.sh|zenbook-a16|0|wrote etc/wireplumber/wireplumber.conf.d/50-hide-qcom-iris-v4l2.conf
 hardware/qualcomm/disable-iris-v4l2.sh|plain|0
 hardware/dell-xps13-ptl-speaker-firmware.sh|xps13-ptl|0|pkg-add linux-firmware-cirrus-dx13260
 hardware/dell-xps13-ptl-speaker-firmware.sh|xps13-ptl+unreadable|0
@@ -509,11 +509,12 @@ vivobook_cmd() {
 
 rules_file=$root/etc/udev/rules.d/90-vivobook-s15-soundwire-no-runtime-pm.rules
 sleep_file=$root/etc/systemd/sleep.conf.d/50-vivobook-s2idle.conf
-iris_file=$root/etc/wireplumber/wireplumber.conf.d/50-disable-qcom-iris-v4l2.conf
+iris_file=$root/etc/wireplumber/wireplumber.conf.d/50-hide-qcom-iris-v4l2.conf
+iris_old=$root/etc/wireplumber/wireplumber.conf.d/50-disable-qcom-iris-v4l2.conf
 soundwire_control=$root/sys/bus/platform/drivers/qcom-soundwire/controller/power/control
 
 machine plain
-[[ $(vivobook_cmd status) == $'Machine: not a Vivobook S 15 S5507QA\nSoundWire runtime PM: not installed\nSuspend: kernel default\nIris video codec: unchanged' ]] ||
+[[ $(vivobook_cmd status) == $'Machine: not a Vivobook S 15 S5507QA\nSoundWire runtime PM: not installed\nSuspend: kernel default\nIris decoder: not hidden from PipeWire\nIris firmware: not a Qualcomm machine' ]] ||
   fail "Vivobook status on other hardware names neither the laptop nor the fixes" "$(vivobook_cmd status)"
 vivobook_cmd install >/dev/null
 [[ ! -e $rules_file && ! -e $sleep_file && ! -e $iris_file ]] ||
@@ -521,7 +522,7 @@ vivobook_cmd install >/dev/null
 pass "Vivobook fixes stay off other hardware"
 
 machine yoga-slim7x
-[[ $(vivobook_cmd status) == $'Machine: Qualcomm, not a Vivobook S 15 S5507QA\nSoundWire runtime PM: not installed\nSuspend: kernel default\nIris video codec: unchanged' ]] ||
+[[ $(vivobook_cmd status) == $'Machine: Qualcomm, not a Vivobook S 15 S5507QA\nSoundWire runtime PM: not installed\nSuspend: kernel default\nIris decoder: not hidden from PipeWire\nIris firmware: not checked' ]] ||
   fail "Vivobook status on another Qualcomm machine keeps the speaker and sleep fixes off" "$(vivobook_cmd status)"
 vivobook_cmd install >/dev/null
 [[ ! -e $rules_file && ! -e $sleep_file && -f $iris_file ]] ||
@@ -545,7 +546,7 @@ mkdir -p "$(dirname "$decoy_sleep")" "$(dirname "$decoy_rule")"
 printf 'keep\n' >"$decoy_sleep"
 printf 'keep\n' >"$decoy_rule"
 
-[[ $(vivobook_cmd status) == $'Machine: ASUS Vivobook S 15 S5507QA\nSoundWire runtime PM: not installed\nSuspend: kernel default\nIris video codec: unchanged' ]] ||
+[[ $(vivobook_cmd status) == $'Machine: ASUS Vivobook S 15 S5507QA\nSoundWire runtime PM: not installed\nSuspend: kernel default\nIris decoder: not hidden from PipeWire\nIris firmware: not checked' ]] ||
   fail "Vivobook status before install says the fixes are absent" "$(vivobook_cmd status)"
 vivobook_cmd install >/dev/null
 [[ $(<"$rules_file") == 'ACTION=="add|bind", SUBSYSTEM=="platform", DRIVER=="qcom-soundwire", ATTR{power/control}="on"' ]] ||
@@ -554,10 +555,12 @@ vivobook_cmd install >/dev/null
   fail "Vivobook suspends to idle" "$(<"$sleep_file")"
 [[ $(stat -c %a "$rules_file") == 644 && $(stat -c %a "$sleep_file") == 644 ]] ||
   fail "Vivobook speaker and sleep files are not writable by other users"
-cmp -s "$ROOT/install/hardware/qualcomm/50-disable-qcom-iris-v4l2.conf" "$iris_file" ||
+cmp -s "$ROOT/install/hardware/qualcomm/50-hide-qcom-iris-v4l2.conf" "$iris_file" ||
   fail "Vivobook WirePlumber rule is the shipped iris config"
 grep -Fq 'device.disabled = true' "$iris_file" ||
-  fail "Vivobook WirePlumber rule disables the video codec"
+  fail "Vivobook WirePlumber rule hides the decoder from PipeWire"
+grep -Fq 'does not disable hardware decoding' "$iris_file" ||
+  fail "Vivobook WirePlumber rule says it does not disable decoding"
 grep -Fq 'v4l2_device.platform-aa00000.video-codec' "$iris_file" ||
   fail "Vivobook WirePlumber rule matches the iris codec node"
 [[ $(<"$soundwire_control") == on ]] ||
@@ -569,7 +572,11 @@ fi
 vivobook_cmd install >/dev/null
 [[ $(<"$rules_file") == 'ACTION=="add|bind", SUBSYSTEM=="platform", DRIVER=="qcom-soundwire", ATTR{power/control}="on"' ]] ||
   fail "installing the Vivobook fixes again leaves the SoundWire rule in place"
-[[ $(vivobook_cmd status) == $'Machine: ASUS Vivobook S 15 S5507QA\nSoundWire runtime PM: installed\nSuspend: s2idle\nIris video codec: disabled in WirePlumber' ]] ||
+printf 'stale disable rule\n' >"$iris_old"
+vivobook_cmd install >/dev/null
+[[ ! -e $iris_old && -f $iris_file ]] ||
+  fail "install drops the old WirePlumber filename and keeps the hide rule"
+[[ $(vivobook_cmd status) == $'Machine: ASUS Vivobook S 15 S5507QA\nSoundWire runtime PM: installed\nSuspend: s2idle\nIris decoder: hidden from PipeWire cameras\nIris firmware: not checked' ]] ||
   fail "Vivobook status reports the installed fixes" "$(vivobook_cmd status)"
 
 vivobook_cmd uninstall >/dev/null
@@ -579,9 +586,37 @@ vivobook_cmd uninstall >/dev/null
   fail "uninstall returns SoundWire controllers to runtime PM" "$(<"$soundwire_control")"
 [[ $(<"$decoy_sleep") == keep && $(<"$decoy_rule") == keep ]] ||
   fail "uninstall leaves other sleep and udev files in place"
-[[ $(vivobook_cmd status) == $'Machine: ASUS Vivobook S 15 S5507QA\nSoundWire runtime PM: not installed\nSuspend: kernel default\nIris video codec: unchanged' ]] ||
+[[ $(vivobook_cmd status) == $'Machine: ASUS Vivobook S 15 S5507QA\nSoundWire runtime PM: not installed\nSuspend: kernel default\nIris decoder: not hidden from PipeWire\nIris firmware: not checked' ]] ||
   fail "Vivobook status after uninstall says the fixes are gone" "$(vivobook_cmd status)"
 pass "Vivobook S15 fixes install, report their state, and uninstall"
+
+firmware_warning=$'Iris firmware: error -22. Snapdragon X Plus (0xA016) needs qcvss8380_pa.mbn from the OEM Windows driver package, not the X Elite qcvss8380.mbn.'
+iris_log=$test_tmp/iris.log
+printf '%s\n' 'qcom-iris aa00000.video-codec: firmware download failed -22' >"$iris_log"
+[[ $(OMARCHY_IRIS_KERNEL_LOG=$iris_log vivobook_cmd status | tail -n1) == "$firmware_warning" ]] ||
+  fail "iris firmware status warns when the kernel reports error -22" "$(OMARCHY_IRIS_KERNEL_LOG=$iris_log vivobook_cmd status)"
+printf '%s\n' 'qcom-iris aa00000.video-codec: auth and reset failed: -22' >"$iris_log"
+[[ $(OMARCHY_IRIS_KERNEL_LOG=$iris_log vivobook_cmd status | tail -n1) == "$firmware_warning" ]] ||
+  fail "iris firmware status warns when authentication fails with -22"
+printf '%s\n' \
+  'qcom-iris aa00000.video-codec: error -22 initializing firmware qcom/x1p42100/ASUSTeK/vivobook-s15/qcvss8380.mbn' \
+  >"$iris_log"
+[[ $(OMARCHY_IRIS_KERNEL_LOG=$iris_log vivobook_cmd status | tail -n1) == "$firmware_warning" ]] ||
+  fail "iris firmware status warns when firmware init fails with -22"
+before=$(snapshot)
+printf '%s\n' \
+  'qcom-iris aa00000.video-codec: firmware download failed -2' \
+  'usb 1-1: device descriptor read/64, error -22' \
+  'qcom-iris aa00000.video-codec: firmware download failed -220' \
+  'i915 0000:00:02.0: [drm] Finished loading DMC firmware i915/adlp_dmc.bin' \
+  >"$iris_log"
+[[ $(OMARCHY_IRIS_KERNEL_LOG=$iris_log vivobook_cmd status | tail -n1) == 'Iris firmware: ok' ]] ||
+  fail "iris firmware status ignores other -22 lines and Intel iris messages" "$(OMARCHY_IRIS_KERNEL_LOG=$iris_log vivobook_cmd status | tail -n1)"
+: >"$iris_log"
+[[ $(OMARCHY_IRIS_KERNEL_LOG=$iris_log vivobook_cmd status | tail -n1) == 'Iris firmware: ok' ]] ||
+  fail "iris firmware status is ok when the kernel log has no iris error"
+[[ $(snapshot) == "$before" ]] || fail "iris firmware status does not write anything"
+pass "iris firmware status warns only for the Qualcomm firmware error -22"
 
 if bash "$ROOT/bin/omarchy-hw-vivobook-s5507qa" nonsense >/dev/null 2>&1; then
   fail "the Vivobook command rejects an unknown action"

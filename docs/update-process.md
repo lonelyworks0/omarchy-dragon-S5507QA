@@ -137,6 +137,9 @@ omarchy-update
   ├─ run the post-update hook, then update mise tools (a failed tool update
   │  warns and the update continues)
   ├─ update AUR packages
+  ├─ omarchy-update-oem-firmware
+  │    └─ on a listed Snapdragon laptop, offer a newer OEM iris firmware;
+  │       default is no, and a skip or network failure does not stop the update
   ├─ omarchy-update-boot, then stop the keepalive
   │    └─ the platform's boot package proves the boot files boot the updated system
   ├─ omarchy-update-stay-awake stop
@@ -308,6 +311,7 @@ scripts.
 | `omarchy-update-boot` | Hidden helper that runs the platform's `update-verify` lifecycle operation through `omarchy-lifecycle-dispatch`, with `sudo` only when the platform implements it. | **Keep internal/hidden.** Keeps platform boot checks out of the pipeline and stubbable in tests. |
 | `omarchy-update-restart` | Restarts components selected by `restart-*-required` markers, always restarts the shell, and prompts for reboot after kernel/Hyprland updates. Internal phase flags let the update finish sudo-capable restarts before user hooks and defer only the unprivileged reboot prompt. | **Keep.** Important final step; may eventually include service-restart checks. |
 | `omarchy-update-firmware` | Manual firmware update command using fwupd. Not part of the normal update pipeline. | **Keep separate.** Firmware is not a routine system update step. |
+| `omarchy-update-oem-firmware` | During `omarchy update`, offers a newer ASUS Qualcomm driver package's iris firmware on a listed Snapdragon laptop. Default is no. Other machines are a no-op. | **Keep.** The model table is the place another Snapdragon X OEM is added. |
 | `omarchy-update-time` | Restarts `systemd-timesyncd`. | **Question.** Not really an update command. Consider renaming/moving under system/time maintenance. |
 
 ## Closed decisions
