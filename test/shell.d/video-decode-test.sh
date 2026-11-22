@@ -166,3 +166,25 @@ run_helper "$home"
 grep -Fxq -- "$features,AcceleratedVideoDecoder" "$test_tmp/flags-target.conf" || fail "the target of a symlinked Chromium file gets the feature"
 grep -Fxq -- "$hwdec" "$test_tmp/mpv-target.conf" || fail "the target of a symlinked mpv config gets the fallback"
 pass "symlinked config files stay symlinks and their targets get the settings"
+
+# GStreamer elements are a machine package, not an mpv setting. The leaf is
+# what setup sources; the package lists are what a new install and the ISO carry.
+cat >"$test_tmp/bin/omarchy-pkg-add" <<'STUB'
+#!/bin/bash
+printf '%s\n' "$@" >>"$OMARCHY_TEST_PACKAGES"
+STUB
+chmod +x "$test_tmp/bin/omarchy-pkg-add"
+export OMARCHY_TEST_PACKAGES="$test_tmp/packages"
+leaf="$ROOT/install/hardware/qualcomm/video-decode.sh"
+rm -f "$OMARCHY_TEST_PACKAGES" "$OMARCHY_TEST_QUALCOMM"
+bash -c "source '$leaf'"
+[[ ! -e $OMARCHY_TEST_PACKAGES ]] || fail "other machines get no GStreamer V4L2 decoder" "$(cat "$OMARCHY_TEST_PACKAGES" 2>/dev/null)"
+touch "$OMARCHY_TEST_QUALCOMM"
+bash -c "source '$leaf'"
+[[ $(cat "$OMARCHY_TEST_PACKAGES") == "gst-plugins-good" ]] ||
+  fail "a Snapdragon machine gets the GStreamer V4L2 decoders" "$(cat "$OMARCHY_TEST_PACKAGES")"
+grep -Fxq 'gst-plugins-good' "$ROOT/install/omarchy-aarch64-qualcomm.packages" ||
+  fail "new Snapdragon installs include gst-plugins-good"
+grep -Fxq 'gst-plugins-good' "$ROOT/install/omarchy-other.packages" ||
+  fail "the ISO can supply gst-plugins-good offline"
+pass "Snapdragon installs get GStreamer's V4L2 decoders, new and existing"

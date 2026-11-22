@@ -1,13 +1,15 @@
 #!/bin/bash
 
-# omarchy:summary=Install or remove the Vivobook S15 speaker, suspend-to-idle, and Qualcomm iris WirePlumber fixes
+# omarchy:summary=Install or remove Vivobook S15 speaker and suspend fixes, hide the iris decoder from PipeWire, and report iris firmware
 # omarchy:args=[status|install|uninstall]
 # omarchy:examples=omarchy hw vivobook s5507qa | omarchy hw vivobook s5507qa install | omarchy hw vivobook s5507qa uninstall
 
 # ASUS Vivobook S 15 S5507QA keeps its SoundWire speaker amps out of runtime
 # suspend and suspends to idle. Every Qualcomm machine also gets the
-# WirePlumber rule that skips the iris video codec. status is the default.
-# install and uninstall change root-owned files and re-exec with sudo.
+# WirePlumber rule that hides the iris decoder from PipeWire's camera list.
+# That rule does not disable hardware decoding. status is the default and
+# is read-only, including the iris firmware check. install and uninstall
+# change root-owned files and re-exec with sudo.
 
 set -euo pipefail
 
@@ -16,15 +18,16 @@ sleep_dir=${OMARCHY_VIVOBOOK_SLEEP_DIR:-/etc/systemd/sleep.conf.d}
 iris_dir=${OMARCHY_QUALCOMM_WIREPLUMBER_DIR:-/etc/wireplumber/wireplumber.conf.d}
 rules_file=$rules_dir/90-vivobook-s15-soundwire-no-runtime-pm.rules
 sleep_file=$sleep_dir/50-vivobook-s2idle.conf
-iris_file=$iris_dir/50-disable-qcom-iris-v4l2.conf
+iris_file=$iris_dir/50-hide-qcom-iris-v4l2.conf
+iris_file_retired=$iris_dir/50-disable-qcom-iris-v4l2.conf
 
 usage() {
   cat <<'EOF'
 Usage: omarchy-hw-vivobook-s5507qa [status|install|uninstall]
 
-status     Show whether these fixes are installed
+status     Show whether these fixes are installed, and whether iris firmware failed
 install    Install the fixes this machine qualifies for
-uninstall  Remove the speaker, suspend, and iris WirePlumber fixes
+uninstall  Remove the speaker, suspend, and PipeWire iris-hide fixes
 EOF
 }
 
@@ -87,6 +90,53 @@ restart_user_wireplumber() {
   fi
 }
 
+# Kernel log lines from drivers/media/platform/qcom/iris/iris_firmware.c:
+# "firmware download failed -22" and "auth and reset failed: -22". -22 is
+# EINVAL from the secure monitor. On Snapdragon X Plus (chip 0xA016) that
+# is what the X Elite qcvss8380.mbn gets; the image that loads is
+# qcvss8380_pa.mbn from the OEM Windows driver package.
+iris_firmware_failed_22() {
+  awk '
+    BEGIN { IGNORECASE = 1 }
+    /qcom-iris/ && /firmware/ && /(^|[^0-9])-22([^0-9]|$)/ { found = 1 }
+    /qcom-iris/ && /auth and reset failed:[[:space:]]*-22([^0-9]|$)/ { found = 1 }
+    END { exit !found }
+  '
+}
+
+iris_firmware_status() {
+  local log=${OMARCHY_IRIS_KERNEL_LOG:-} text="" checked=0
+
+  if ! omarchy-hw-aarch64-qualcomm; then
+    echo "Iris firmware: not a Qualcomm machine"
+    return
+  fi
+
+  if [[ -n $log ]]; then
+    if [[ -r $log ]]; then
+      text=$(<"$log")
+      checked=1
+    fi
+  elif (( under_test == 0 )); then
+    text=$(dmesg --color=never 2>/dev/null || true)
+    if [[ -z $text ]]; then
+      text=$(journalctl -k -b --no-pager -o cat 2>/dev/null || true)
+    fi
+    [[ -n $text ]] && checked=1
+  fi
+
+  if (( checked == 0 )); then
+    echo "Iris firmware: not checked"
+    return
+  fi
+
+  if iris_firmware_failed_22 <<<"$text"; then
+    echo "Iris firmware: error -22. Snapdragon X Plus (0xA016) needs qcvss8380_pa.mbn from the OEM Windows driver package, not the X Elite qcvss8380.mbn."
+  else
+    echo "Iris firmware: ok"
+  fi
+}
+
 status() {
   if omarchy-hw-aarch64-qualcomm && omarchy-hw-match "S5507QA"; then
     echo "Machine: ASUS Vivobook S 15 S5507QA"
@@ -108,11 +158,13 @@ status() {
     echo "Suspend: kernel default"
   fi
 
-  if [[ -f $iris_file ]]; then
-    echo "Iris video codec: disabled in WirePlumber"
+  if [[ -f $iris_file || -f $iris_file_retired ]]; then
+    echo "Iris decoder: hidden from PipeWire cameras"
   else
-    echo "Iris video codec: unchanged"
+    echo "Iris decoder: not hidden from PipeWire"
   fi
+
+  iris_firmware_status
 }
 
 install_fixes() {
@@ -125,7 +177,7 @@ install_fixes() {
 
 uninstall_fixes() {
   local had_iris=0
-  if [[ -f $iris_file ]]; then
+  if [[ -f $iris_file || -f $iris_file_retired ]]; then
     had_iris=1
   fi
   bash "$OMARCHY_PATH/install/hardware/asus/vivobook-s5507qa.sh" uninstall
@@ -133,7 +185,7 @@ uninstall_fixes() {
   if (( had_iris == 1 )); then
     restart_user_wireplumber
   fi
-  echo "Removed the Vivobook S15 speaker and suspend fixes and the Qualcomm iris WirePlumber rule."
+  echo "Removed the Vivobook S15 speaker and suspend fixes and the Qualcomm rule that hides the iris decoder from PipeWire."
   echo "Install them again with: omarchy hw vivobook s5507qa install"
 }
 

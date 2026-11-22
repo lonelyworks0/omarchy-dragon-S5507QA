@@ -1,0 +1,634 @@
+#!/bin/bash
+
+# omarchy:summary=Check ASUS for a newer iris video firmware on a listed Snapdragon laptop
+# omarchy:args=[check|status|rollback|verify <file> [soc-hw-id]]
+# omarchy:examples=omarchy update oem firmware | omarchy update oem firmware rollback | omarchy update oem firmware verify qcvss8380_pa.mbn
+# omarchy:requires-sudo=true
+
+# omarchy update runs this after package updates. It only does work for a
+# machine in the table below; every other machine returns immediately.
+# A skip, a network failure, or an image that is not production-signed for
+# the machine's SoC does not fail the update.
+#
+# The table is one row per laptop. Another Snapdragon X model is a new row:
+# its DMI match, the ASUS support API ids from that model's download page,
+# the archive member that holds the iris firmware, where Linux looks for it,
+# and the SoC hardware id the image must be signed for.
+#
+# ASUS lists these ARM laptops under Windows 11 64-bit (osid 52). The
+# Qualcomm driver package is the "Driver Package" / SOCPackage entry.
+# Package 44984 (V1.367.7800.0) is one known build of that package; the
+# check follows whatever the API currently publishes.
+
+set -euo pipefail
+
+API_TIMEOUT=20
+DOWNLOAD_TIMEOUT=180
+DOWNLOAD_BASE=${OMARCHY_ASUS_DOWNLOAD_BASE:-https://dlcdnets.asus.com}
+
+# id|dmi|model|pdid|pdhashedid|osid|category|title|name contains|member|dest under firmware root|soc|install names
+OEM_FIRMWARE_MODELS=(
+  'vivobook-s5507qa|S5507QA|s5507qa|25813|rypr2vnwm9cjqn8t|52|Driver Package|Qualcomm Board Support Package|SOCPackage|Driver/QualcommBSP/GFX/qcdx8380/qcvss8380_pa.mbn|updates/qcom/x1p42100/ASUSTeK/vivobook-s15|0xA016|qcvss8380.mbn,qcvss8380_pa.mbn'
+)
+
+usage() {
+  cat <<'EOF'
+Usage: omarchy-update-oem-firmware [check|status|rollback|verify <file> [soc-hw-id]]
+
+check     Ask ASUS, and install a newer iris firmware only when you say yes
+status    Show the installed package recorded for this machine
+rollback  Restore the firmware file replaced by the last install
+verify    Read an MBN and accept it only when it is production-signed for the SoC
+EOF
+}
+
+warn() {
+  echo -e "\e[33m$*\e[0m" >&2
+}
+
+state_root() {
+  printf '%s\n' "${OMARCHY_OEM_FIRMWARE_STATE:-/var/lib/omarchy/oem-firmware}"
+}
+
+firmware_root() {
+  printf '%s\n' "${OMARCHY_FIRMWARE_ROOT:-/usr/lib/firmware}"
+}
+
+can_write_under() {
+  local dir=$1 parent
+  if [[ -d $dir ]]; then
+    [[ -w $dir ]]
+    return
+  fi
+  parent=$dir
+  while [[ ! -d $parent && $parent != / ]]; do
+    parent=${parent%/*}
+  done
+  [[ -w $parent ]]
+}
+
+# MBN v7 hash segment. SoC hardware versions are the 12 u32s at byte 16 of
+# the 224-byte metadata. OEM lifecycle is the u32 at byte 148: 1 development,
+# 2 production (0xD is the same production state when the field is stored as
+# the high half of a u64). A test-root image carries "Test Key" or "Test Root"
+# in its certificate chain. The overlapping u64 is not read on its own: a
+# production value of 2 is the little-endian high half of 0x200000000, which
+# some descriptions call a different state.
+verify_mbn() {
+  local file=$1 soc=$2 out status
+  if [[ ! -f $file ]]; then
+    echo "reject"
+    echo "reason=missing"
+    return 1
+  fi
+  set +e
+  out=$(python3 - "$file" "$soc" <<'PY'
+import struct
+import sys
+
+path, soc_text = sys.argv[1], sys.argv[2]
+want = int(soc_text, 0)
+
+def fail(reason):
+    print("reject")
+    print(f"reason={reason}")
+    sys.exit(1)
+
+data = open(path, "rb").read()
+if len(data) < 64 or data[:4] != b"\x7fELF" or data[5] != 1:
+    fail("not an ELF MBN")
+elf64 = data[4] == 2
+if elf64:
+    e_phoff = struct.unpack_from("<Q", data, 32)[0]
+    e_phentsize, e_phnum = struct.unpack_from("<HH", data, 54)
+else:
+    e_phoff = struct.unpack_from("<I", data, 28)[0]
+    e_phentsize, e_phnum = struct.unpack_from("<HH", data, 42)
+if e_phnum == 0 or e_phnum > 64 or e_phentsize < (56 if elf64 else 32):
+    fail("not an ELF MBN")
+
+seg = None
+for i in range(e_phnum):
+    off = e_phoff + i * e_phentsize
+    if off + e_phentsize > len(data):
+        fail("truncated ELF")
+    if elf64:
+        p_flags = struct.unpack_from("<I", data, off + 4)[0]
+        p_off = struct.unpack_from("<Q", data, off + 8)[0]
+        p_filesz = struct.unpack_from("<Q", data, off + 32)[0]
+    else:
+        p_off = struct.unpack_from("<I", data, off + 4)[0]
+        p_filesz = struct.unpack_from("<I", data, off + 16)[0]
+        p_flags = struct.unpack_from("<I", data, off + 24)[0]
+    if ((p_flags >> 24) & 7) == 2 and p_filesz:
+        end = p_off + p_filesz
+        if end > len(data):
+            fail("truncated hash segment")
+        seg = data[p_off:end]
+        break
+if seg is None or len(seg) < 40:
+    fail("no MBN v7 hash segment")
+
+reserved, ver, cms, qms, oms, hts, qss, qcs, oss, ocs = struct.unpack_from("<10I", seg, 0)
+if ver != 7:
+    fail(f"MBN version {ver}, want 7")
+need = 40 + cms + qms + oms + hts + qss + qcs + oss + ocs
+if need > len(seg):
+    fail("truncated hash segment")
+
+o = 40 + cms
+qti = seg[o:o + qms]
+o += qms
+oem = seg[o:o + oms]
+o += oms + hts + qss
+qcert = seg[o:o + qcs]
+o += qcs + oss
+ocert = seg[o:o + ocs]
+certs = (qcert + ocert).lower()
+
+def socs(md):
+    if len(md) < 224:
+        return []
+    return [w for w in struct.unpack_from("<12I", md, 16) if w]
+
+def lifecycle(md):
+    if len(md) < 224:
+        return None
+    life = struct.unpack_from("<I", md, 148)[0]
+    if life == 1:
+        return "development"
+    if life in (2, 0xD):
+        return "production"
+    return "unknown"
+
+found = socs(qti) + socs(oem)
+if want not in found:
+    fail(f"SoC hardware id is not {soc_text}")
+if len(oem) < 224:
+    fail("no OEM metadata")
+life = lifecycle(oem)
+if life == "development":
+    fail("development")
+if life != "production":
+    fail("not production-signed")
+if not certs:
+    fail("not production-signed")
+for marker in (b"test key", b"test-root", b"test root"):
+    if marker in certs:
+        fail("test-root")
+
+print("accept")
+print(f"soc={want:#x}")
+print("lifecycle=production")
+PY
+  )
+  status=$?
+  set -e
+  printf '%s\n' "$out"
+  return "$status"
+}
+
+version_is_newer() {
+  local candidate=$1 installed=$2
+  local -a a b
+  local i n av bv
+  [[ -n $installed ]] || return 0
+  candidate=${candidate#[Vv]}
+  installed=${installed#[Vv]}
+  read -r -a a <<<"${candidate//./ }"
+  read -r -a b <<<"${installed//./ }"
+  n=${#a[@]}
+  (( ${#b[@]} > n )) && n=${#b[@]}
+  for ((i = 0; i < n; i++)); do
+    av=${a[i]:-0}
+    bv=${b[i]:-0}
+    av=${av//[^0-9]/}
+    bv=${bv//[^0-9]/}
+    av=${av:-0}
+    bv=${bv:-0}
+    if (( 10#$av > 10#$bv )); then
+      return 0
+    fi
+    if (( 10#$av < 10#$bv )); then
+      return 1
+    fi
+  done
+  return 1
+}
+
+load_model() {
+  local row
+  id="" dmi="" model="" pdid="" pdhash="" osid="" category="" title="" name_has="" member="" dest_rel="" soc="" names=""
+  for row in "${OEM_FIRMWARE_MODELS[@]}"; do
+    IFS='|' read -r id dmi model pdid pdhash osid category title name_has member dest_rel soc names <<<"$row"
+    if omarchy-hw-match "$dmi"; then
+      return 0
+    fi
+  done
+  id=""
+  return 1
+}
+
+state_file() {
+  printf '%s/%s.state\n' "$(state_root)" "$id"
+}
+
+backup_file() {
+  printf '%s/%s.backup\n' "$(state_root)" "$id"
+}
+
+read_state() {
+  local line file
+  installed_version="" installed_package="" installed_path=""
+  previous_version="" previous_package="" backup_existed=0 declined_version=""
+  file=$(state_file)
+  [[ -f $file ]] || return 0
+  while IFS= read -r line; do
+    case $line in
+      installed_version=*) installed_version=${line#installed_version=} ;;
+      installed_package=*) installed_package=${line#installed_package=} ;;
+      installed_path=*) installed_path=${line#installed_path=} ;;
+      previous_version=*) previous_version=${line#previous_version=} ;;
+      previous_package=*) previous_package=${line#previous_package=} ;;
+      backup_existed=*) backup_existed=${line#backup_existed=} ;;
+      declined_version=*) declined_version=${line#declined_version=} ;;
+    esac
+  done <"$file"
+}
+
+write_state() {
+  local file tmp
+  file=$(state_file)
+  tmp=$(mktemp)
+  cat >"$tmp" <<EOF
+installed_version=$installed_version
+installed_package=$installed_package
+installed_path=$installed_path
+previous_version=$previous_version
+previous_package=$previous_package
+backup_existed=$backup_existed
+declined_version=$declined_version
+EOF
+  if can_write_under "$(state_root)"; then
+    install -Dm644 "$tmp" "$file"
+  else
+    sudo install -Dm644 "$tmp" "$file"
+  fi
+  rm -f "$tmp"
+}
+
+# Re-run as root when the firmware and state directories are not writable.
+# The prompt still happens on this terminal; omarchy update has already
+# authorized sudo.
+escalate_if_needed() {
+  if (( EUID == 0 )); then
+    return 0
+  fi
+  if can_write_under "$(state_root)" && can_write_under "$(firmware_root)/$dest_rel"; then
+    return 0
+  fi
+  local -a env_args
+  env_args=(
+    PATH="$PATH"
+    OMARCHY_PATH="${OMARCHY_PATH:-}"
+    OMARCHY_UPDATE_UNATTENDED="${OMARCHY_UPDATE_UNATTENDED:-}"
+    OMARCHY_OEM_FIRMWARE_ASSUME_YES="${OMARCHY_OEM_FIRMWARE_ASSUME_YES:-}"
+    OMARCHY_OEM_FIRMWARE_ASSUME_NO="${OMARCHY_OEM_FIRMWARE_ASSUME_NO:-}"
+    OMARCHY_OEM_FIRMWARE_STATE="${OMARCHY_OEM_FIRMWARE_STATE:-}"
+    OMARCHY_FIRMWARE_ROOT="${OMARCHY_FIRMWARE_ROOT:-}"
+    OMARCHY_ASUS_DRIVERS_URL="${OMARCHY_ASUS_DRIVERS_URL:-}"
+    OMARCHY_ASUS_DOWNLOAD_BASE="${OMARCHY_ASUS_DOWNLOAD_BASE:-}"
+  )
+  if [[ -v OMARCHY_IRIS_DT_FIRMWARE ]]; then
+    env_args+=(OMARCHY_IRIS_DT_FIRMWARE="$OMARCHY_IRIS_DT_FIRMWARE")
+  fi
+  exec sudo -- env "${env_args[@]}" "$0" "$@"
+}
+
+dt_firmware_name() {
+  local dt base allowed n found file
+  if [[ -v OMARCHY_IRIS_DT_FIRMWARE ]]; then
+    dt=$OMARCHY_IRIS_DT_FIRMWARE
+  else
+    dt=""
+    if [[ -d ${OMARCHY_PROC_ROOT:-/proc}/device-tree ]]; then
+      while IFS= read -r file; do
+        found=$(tr '\0' '\n' <"$file" | grep -m1 'qcvss8380' || true)
+        if [[ -n $found ]]; then
+          dt=$found
+          break
+        fi
+      done < <(find "${OMARCHY_PROC_ROOT:-/proc}/device-tree" -name firmware-name -type f 2>/dev/null)
+    fi
+  fi
+  base=${dt##*/}
+  IFS=',' read -r -a allowed <<<"$names"
+  for n in "${allowed[@]}"; do
+    if [[ $base == "$n" ]]; then
+      printf '%s\n' "$n"
+      return
+    fi
+  done
+  base=${member##*/}
+  printf '%s\n' "$base"
+}
+
+confirm_install() {
+  local prompt=$1 answer
+  if [[ ${OMARCHY_OEM_FIRMWARE_ASSUME_YES:-} == 1 ]]; then
+    return 0
+  fi
+  if [[ ${OMARCHY_UPDATE_UNATTENDED:-} == 1 || ${OMARCHY_OEM_FIRMWARE_ASSUME_NO:-} == 1 ]]; then
+    return 1
+  fi
+  if command -v gum >/dev/null && { [[ -t 0 ]] || [[ -t 1 ]]; }; then
+    gum confirm --default=false --affirmative Yes --negative No "$prompt"
+    return
+  fi
+  read -r -p "$prompt [y/N] " answer || return 1
+  [[ ${answer,,} == y || ${answer,,} == yes ]]
+}
+
+select_package() {
+  local json=$1
+  python3 - "$json" "$category" "$title" "$name_has" "$DOWNLOAD_BASE" <<'PY'
+import json
+import re
+import sys
+
+path, category, title, name_has, base = sys.argv[1:]
+data = json.load(open(path))
+result = data.get("Result") or {}
+cats = result.get("Obj") or []
+
+def version_key(text):
+    text = text.lstrip("Vv")
+    parts = []
+    for part in text.split("."):
+        digits = re.sub(r"\D", "", part)
+        parts.append(int(digits or "0"))
+    return parts
+
+best = None
+for cat in cats:
+    if not isinstance(cat, dict):
+        continue
+    cat_name = str(cat.get("Name") or "")
+    if category and category.lower() not in cat_name.lower():
+        continue
+    for item in cat.get("Files") or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("IsRelease") or "1") == "0":
+            continue
+        item_title = str(item.get("Title") or "")
+        url = (item.get("DownloadUrl") or {}).get("Global") or ""
+        if title and title.lower() not in item_title.lower():
+            continue
+        if name_has and name_has.lower() not in url.lower() and name_has.lower() not in item_title.lower():
+            continue
+        version = str(item.get("Version") or "")
+        if not version or not url:
+            continue
+        if best is None or version_key(version) > version_key(best[0]):
+            best = (version, url, str(item.get("sha256") or ""))
+
+if best is None:
+    sys.exit(2)
+version, url, digest = best
+if url.startswith("/"):
+    url = base.rstrip("/") + url
+package = ""
+match = re.search(r"/DriverPackage/(\d+)/", url)
+if match:
+    package = match.group(1)
+else:
+    match = re.search(r"_(\d+)(?:_\d+)?\.exe(?:$|\?)", url)
+    if match:
+        package = match.group(1)
+print(f"version={version}")
+print(f"package={package}")
+print(f"url={url}")
+print(f"sha256={digest}")
+PY
+}
+
+extract_member() {
+  local archive=$1 out=$2 member=$3 base name
+  base=$(basename "$member")
+  rm -rf "$out"
+  mkdir -p "$out"
+  if command -v 7z >/dev/null 2>&1; then
+    7z e -y -o"$out" "$archive" "$member" >/dev/null 2>&1 || true
+    7z e -y -o"$out" "$archive" "${member//\//\\}" >/dev/null 2>&1 || true
+  fi
+  if [[ ! -f $out/$base ]] && command -v bsdtar >/dev/null 2>&1; then
+    bsdtar -xf "$archive" -C "$out" "$member" >/dev/null 2>&1 ||
+      bsdtar -xf "$archive" -C "$out" "${member//\//\\}" >/dev/null 2>&1 || true
+  fi
+  if [[ -f $out/$base ]]; then
+    return 0
+  fi
+  name=$(find "$out" -type f -name "$base" -print -quit 2>/dev/null || true)
+  if [[ -z $name ]]; then
+    return 1
+  fi
+  mv "$name" "$out/$base"
+}
+
+install_firmware() {
+  local src=$1 dest=$2 backup
+  backup=$(backup_file)
+  previous_version=$installed_version
+  previous_package=$installed_package
+  mkdir -p "$(dirname "$dest")" "$(dirname "$backup")"
+  if [[ -f $dest ]]; then
+    cp -a "$dest" "$backup"
+    backup_existed=1
+  else
+    rm -f "$backup"
+    backup_existed=0
+  fi
+  install -Dm644 "$src" "$dest"
+  installed_path=$dest
+  declined_version=""
+}
+
+do_rollback() {
+  local dest backup
+  read_state
+  dest=$installed_path
+  backup=$(backup_file)
+  if [[ -z $dest ]]; then
+    echo "No iris firmware install is recorded for this machine." >&2
+    exit 1
+  fi
+  if [[ $backup_existed == 1 && -f $backup ]]; then
+    install -Dm644 "$backup" "$dest"
+    rm -f "$backup"
+    installed_version=$previous_version
+    installed_package=$previous_package
+    previous_version=""
+    previous_package=""
+    backup_existed=0
+    write_state
+    echo "Restored the previous iris firmware at $dest. It loads on the next boot."
+    return 0
+  fi
+  if [[ $backup_existed == 0 ]]; then
+    rm -f "$dest"
+    installed_version=""
+    installed_package=""
+    installed_path=""
+    write_state
+    echo "Removed $dest. There was no previous iris firmware to restore."
+    return 0
+  fi
+  echo "The backup of $dest is missing, so nothing was changed." >&2
+  exit 1
+}
+
+do_status() {
+  read_state
+  echo "Machine: $id"
+  if [[ -n $installed_version ]]; then
+    echo "Installed package: ${installed_package:-unknown} $installed_version"
+    echo "Installed file: $installed_path"
+  else
+    echo "Installed package: none"
+  fi
+  if [[ $backup_existed == 1 && -f $(backup_file) ]]; then
+    echo "Rollback: available (omarchy update oem firmware rollback)"
+  else
+    echo "Rollback: none"
+  fi
+}
+
+do_check() {
+  local work json meta version package url digest archive extracted mbn dest name report
+  read_state
+  echo "Checking ASUS for an iris firmware package..."
+  work=$(mktemp -d)
+  json=$work/drivers.json
+  if ! curl -fsSL --connect-timeout 10 --max-time "$API_TIMEOUT" -A 'Omarchy' -o "$json" \
+    "${OMARCHY_ASUS_DRIVERS_URL:-https://www.asus.com/support/webapi/ProductV2/GetPDDrivers?website=global&model=${model}&pdhashedid=${pdhash}&pdid=${pdid}&cpu=${dmi}&osid=${osid}&siteID=www&sitelang=}"; then
+    warn "Could not reach ASUS to check the iris firmware. The update will continue."
+    rm -rf "$work"
+    return 0
+  fi
+  if ! meta=$(select_package "$json"); then
+    warn "ASUS did not list a Qualcomm SOC package for this machine. The update will continue."
+    rm -rf "$work"
+    return 0
+  fi
+  version="" package="" url="" digest=""
+  while IFS= read -r line; do
+    case $line in
+      version=*) version=${line#version=} ;;
+      package=*) package=${line#package=} ;;
+      url=*) url=${line#url=} ;;
+      sha256=*) digest=${line#sha256=} ;;
+    esac
+  done <<<"$meta"
+  if [[ -n $installed_version ]] && ! version_is_newer "$version" "$installed_version"; then
+    echo "Iris firmware package $installed_version is already installed."
+    rm -rf "$work"
+    return 0
+  fi
+  if [[ -n $declined_version && $version == "$declined_version" ]]; then
+    rm -rf "$work"
+    return 0
+  fi
+
+  name=$(dt_firmware_name)
+  dest="$(firmware_root)/$dest_rel/$name"
+  if [[ ${OMARCHY_UPDATE_UNATTENDED:-} == 1 ]]; then
+    echo "A newer Qualcomm package is available ($version). Skipped."
+    rm -rf "$work"
+    return 0
+  fi
+  if ! confirm_install "Install iris firmware $version from the ASUS Qualcomm driver package to $dest? The current file is backed up and can be restored with 'omarchy update oem firmware rollback'."; then
+    if [[ ${OMARCHY_OEM_FIRMWARE_ASSUME_NO:-} != 1 ]]; then
+      declined_version=$version
+      write_state
+    fi
+    echo "Skipped the iris firmware package $version."
+    rm -rf "$work"
+    return 0
+  fi
+
+  archive=$work/package.exe
+  if ! curl -fsSL --connect-timeout 10 --max-time "$DOWNLOAD_TIMEOUT" -A 'Omarchy' -o "$archive" "$url"; then
+    warn "Could not download the Qualcomm driver package. Nothing was installed."
+    rm -rf "$work"
+    return 0
+  fi
+  if [[ -n $digest ]]; then
+    if [[ ${digest,,} != "$(sha256sum "$archive" | awk '{print tolower($1)}')" ]]; then
+      warn "The download does not match the SHA-256 ASUS published. Nothing was installed."
+      rm -rf "$work"
+      return 0
+    fi
+  fi
+  if ! extract_member "$archive" "$work/extracted" "$member"; then
+    warn "The driver package does not contain $member. Nothing was installed."
+    rm -rf "$work"
+    return 0
+  fi
+  mbn=$work/extracted/$(basename "$member")
+  if ! report=$(verify_mbn "$mbn" "$soc"); then
+    warn "Refusing this iris firmware: $(printf '%s\n' "$report" | awk -F= '/^reason=/{print $2; exit}')"
+    rm -rf "$work"
+    return 0
+  fi
+  install_firmware "$mbn" "$dest"
+  installed_version=$version
+  installed_package=$package
+  write_state
+  rm -rf "$work"
+  echo "Installed iris firmware $version at $dest. It loads on the next boot."
+  echo "Restore the previous file with: omarchy update oem firmware rollback"
+}
+
+action=${1:-check}
+case $action in
+  check | status | rollback) ;;
+  verify)
+    if [[ -z ${2:-} || ! -f $2 ]]; then
+      usage >&2
+      exit 1
+    fi
+    verify_mbn "$2" "${3:-0xA016}"
+    exit
+    ;;
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  *)
+    usage >&2
+    exit 1
+    ;;
+esac
+
+if ! load_model; then
+  if [[ $action == check ]]; then
+    exit 0
+  fi
+  if [[ $action == status ]]; then
+    echo "Machine: not a listed Snapdragon OEM model"
+    exit 0
+  fi
+  echo "This machine is not a listed Snapdragon OEM model." >&2
+  exit 1
+fi
+
+if [[ $action == check || $action == rollback ]]; then
+  escalate_if_needed "$@"
+fi
+
+case $action in
+  check) do_check ;;
+  status) do_status ;;
+  rollback) do_rollback ;;
+esac

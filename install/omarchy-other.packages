@@ -36,6 +36,8 @@ pipewire
 pipewire-alsa
 pipewire-jack
 pipewire-libcamera
+# Snapdragon iris V4L2 decoders (v4l2h264dec, v4l2h265dec, v4l2vp9dec)
+gst-plugins-good
 pipewire-pulse
 qt6-wayland
 snapper

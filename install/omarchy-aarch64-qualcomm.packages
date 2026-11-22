@@ -12,3 +12,6 @@ vulkan-freedreno
 # The cameras run through libcamera, and apps reach them through this PipeWire
 # backend.
 pipewire-libcamera
+# Stateful V4L2 decoders (v4l2h264dec, v4l2h265dec, v4l2vp9dec) for the iris
+# video codec. mpv uses v4l2m2m-copy from its own config.
+gst-plugins-good
