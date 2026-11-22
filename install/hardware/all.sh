@@ -66,6 +66,7 @@ run_logged "$OMARCHY_INSTALL/hardware/qualcomm/camera.sh"
 run_logged "$OMARCHY_INSTALL/hardware/qualcomm/disable-iris-v4l2.sh"
 run_logged "$OMARCHY_INSTALL/hardware/qualcomm/video-decode.sh"
 run_logged "$OMARCHY_INSTALL/hardware/qualcomm/reboot-watchdog.sh"
+run_logged "$OMARCHY_INSTALL/hardware/qualcomm/wifi-fast-connect.sh"
 
 run_logged "$OMARCHY_INSTALL/hardware/lenovo/fix-yoga-pro7-bass-speakers.sh"
 run_logged "$OMARCHY_INSTALL/hardware/lenovo/yoga-slim7x.sh"

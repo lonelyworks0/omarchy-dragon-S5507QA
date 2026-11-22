@@ -1,0 +1,13 @@
+[Unit]
+Description=Reconnect Wi-Fi without waiting for NetworkManager's scan
+After=NetworkManager.service
+Wants=NetworkManager.service
+# WantedBy starts this alongside multi-user.target. Nothing orders that target
+# after this unit, so boot does not wait for the reconnect.
+
+[Service]
+Type=exec
+ExecStart=/usr/local/bin/wifi-fast-connect
+
+[Install]
+WantedBy=multi-user.target

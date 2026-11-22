@@ -1,0 +1,9 @@
+#!/bin/bash
+
+# After resume the Wi-Fi device is already back, but NetworkManager waits out
+# its scan before reconnecting. Background the reconnect so this hook returns
+# and resume is not held for that scan.
+
+if [[ $1 == "post" ]]; then
+  /usr/local/bin/wifi-fast-connect &
+fi
